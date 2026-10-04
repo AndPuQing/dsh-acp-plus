@@ -30,7 +30,6 @@
     "build": "esbuild src/index.ts src/app.ts --bundle --splitting --platform=node --format=esm --target=node22 --packages=external --external:@deepseek-ai/* --outdir=lib --sourcemap",
     "check": "node scripts/check.mjs",
     "dev": "pnpm build && dsh --profile acp-plus",
-    "prepare": "npm run build",
     "release:check": "npm run build && node scripts/release-check.mjs",
     "test": "node scripts/run-tests.mjs"
   },

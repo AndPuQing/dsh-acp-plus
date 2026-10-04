@@ -101,10 +101,12 @@ dsh --profile acp-plus --dump-config-schema
 
 ## 安装与版本策略
 
-- **本地 checkout**：先 `npm run build`（或 `pnpm build`），再
-  `dsh plugin --profile acp-plus add .`（首次会以 `@deepseek-ai/dsh-base` 初始化 profile）。
-- **git**：`dsh plugin --profile acp-plus add github:AndPuQing/dsh-acp-plus`；包里的
-  `prepare` 会构建 `lib/`，pnpm ≥10 需要按提示把包加入 profile 的 `allowBuilds`。
+- **本地 checkout**：`dsh plugin --profile acp-plus add .`（首次会以
+  `@deepseek-ai/dsh-base` 初始化 profile）。`lib/` 已提交，改源码后运行
+  `npm run build`（或 `pnpm build`）并把 `lib/` 一起提交。
+- **git**：`dsh plugin --profile acp-plus add github:AndPuQing/dsh-acp-plus`；
+  构建产物随仓库提交，安装不需要 build script，pnpm ≥10 也不会触发 `allowBuilds`
+  拦截。
 - **覆盖原生 acp profile**：`dsh --profile acp --patch ./overlay-on-native-acp.yml`。
 - **发布检查**：`npm run release:check` 校验 `lib/` 产物、manifest、profile 引用与
   peer 固定，并打印冒烟命令。装好后可用 `node scripts/smoke-client.mjs`
@@ -195,7 +197,8 @@ preflight 对不匹配的运行版本会拒绝该 bundle，按诊断提示用
   `/name` 拦截执行）、elicitation（`ask_user_question` → ACP `elicitation/create`
   form，D2 定为标准方法；profile 补挂 `tool-ask-user`）。
 - **M6 已完成（真机冒烟已过）**：peer 收紧到 `^0.2.0-rc.1` 并由 packaging 测试锁定
-  preflight；分发形态为本地 checkout / git（`prepare` 构建，暂不发 npm）；README
+  preflight；分发形态为本地 checkout / git（`lib/` 随仓库提交，安装零构建；暂不发
+  npm）；README
   补齐 Config 与 `--dump-config-schema` 文档；`npm run release:check` 做静态发布检查。
   真机冒烟已在 dsh 0.2.0-rc.2 上跑通（keyless 生命周期、真实模型回合、跨进程
   `session/load` + 上下文恢复）；`provider`/`model` 未配置时回落 `agent-default-model`

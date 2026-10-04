@@ -280,9 +280,9 @@ agent 可达面，必须：
   其他运行版本按诊断提示 `dsh plugin allow-version <name>@<version>` 授予
   exact-version 豁免。
 - ✅ **分发形态（D5）**：保持 `private: true`，以**本地 checkout / git** 分发；
-  新增 `prepare: npm run build`（git 安装由 pnpm 构建，用户按提示 allowBuilds），
-  本地 checkout 先 `npm run build`。npm 预构建发布留到选定 scope 后再做。
-  `files` 补入 `overlay-on-native-acp.yml`；`engines.node >= 22`。
+  `lib/` 构建产物随仓库提交，git 安装不需要 build script（pnpm ≥10 不再拦
+  `allowBuilds`）。改源码后必须 `npm run build` 并把 `lib/` 一起提交。npm 发布留到
+  选定 scope 后再做。`files` 补入 `overlay-on-native-acp.yml`；`engines.node >= 22`。
 - ✅ **文档**：README 增加完整 Config 字段表与 `--dump-config` /
   `--dump-config-schema` 命令；schema 字段带 `.description(...)`，dump 可读。
 - ✅ **静态发布检查**：`scripts/release-check.mjs`（`npm run release:check` =
@@ -376,8 +376,8 @@ agentclientprotocol org adapters，zeron 的 ACP driver 消费：客户端在
   不引入自定义扩展方法。见 §2 M5。
 - [ ] D3 是否提供 `session/delete`（原生没有；涉及持久化语义）
 - [ ] D4 MCP resources 是在本仓库做兼容层，还是推上游改 `mcp-client`
-- [x] D5 分发形态：本地 checkout / git（`private: true` + `prepare` 构建），暂不发布
-  npm；需要 npm 时先选定 scope 并把构建放到 prepack/publish 流程。见 §2 M6。
+- [x] D5 分发形态：本地 checkout / git（`private: true`，`lib/` 随仓库提交，安装零
+  构建），暂不发布 npm；需要 npm 时先选定 scope。见 §2 M6。
 
 已决：
 
