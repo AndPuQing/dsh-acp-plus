@@ -1,0 +1,30 @@
+# Overlay for users who want the extended bridge inside the shipped `acp`
+# profile (bundles: base + @deepseek-ai/dsh-acp-app + dsh-acp-plus).
+#
+# Apply with:  dsh --profile acp --patch ./overlay-on-native-acp.yml
+# Or copy these rows into $DSH_HOME/profiles/acp/cordis.patch.yml.
+#
+# The native bridge must be disabled, otherwise two servers claim stdin.
+
+- id: acp
+  disabled: true
+
+- insert:
+    - id: acp-plus-startup
+      name: 'dsh-acp-plus/app'
+
+    # The model-facing ask_user_question tool; the bridge answers it through
+    # the ACP client's form elicitation (PLAN M5).
+    - id: tool-ask-user
+      name: '@deepseek-ai/dsh-tool-ask-user'
+
+    - id: acp-plus
+      name: 'dsh-acp-plus'
+      inject: [acpPlusStartup]
+      config:
+        # provider/model fall back to this profile's `agent-default-model`;
+        # set them here to pin the extended bridge to an explicit route.
+        # session/load and additionalDirectories ship enabled; client terminals
+        # are deliberately unsupported (PLAN D9).
+        enableSessionLoad: true
+        enableAdditionalDirectories: true

@@ -1,0 +1,102 @@
+{
+  "name": "dsh-acp-plus",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Extended Agent Client Protocol server bundle for DeepSeek Harness (dsh)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AndPuQing/dsh-acp-plus.git"
+  },
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./app": "./lib/app.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "overlay-on-native-acp.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "esbuild src/index.ts src/app.ts --bundle --splitting --platform=node --format=esm --target=node22 --packages=external --external:@deepseek-ai/* --outdir=lib --sourcemap",
+    "check": "node scripts/check.mjs",
+    "dev": "pnpm build && dsh --profile acp-plus",
+    "prepare": "npm run build",
+    "release:check": "npm run build && node scripts/release-check.mjs",
+    "test": "node scripts/run-tests.mjs"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "1.4.0",
+    "commander": "^15.0.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-agent": "^0.2.0-rc.1",
+    "@deepseek-ai/dsh-agent-default-model": "^0.2.0-rc.1",
+    "@deepseek-ai/dsh-attachment": "^0.2.0-rc.1",
+    "@deepseek-ai/dsh-brand": "^0.2.0-rc.1",
+    "@deepseek-ai/dsh-cmdline": "^0.2.0-rc.1",
+    "@deepseek-ai/dsh-commands": "^0.2.0-rc.1",
+    "@deepseek-ai/dsh-llm": "^0.2.0-rc.1",
+    "@deepseek-ai/dsh-mcp-client": "^0.2.0-rc.1",
+    "@deepseek-ai/dsh-plan-mode": "^0.2.0-rc.1",
+    "@deepseek-ai/dsh-sandbox-policy": "^0.2.0-rc.1",
+    "@deepseek-ai/dsh-session": "^0.2.0-rc.1",
+    "@deepseek-ai/dsh-session-persistence": "^0.2.0-rc.1",
+    "@deepseek-ai/dsh-session-projection": "^0.2.0-rc.1",
+    "@deepseek-ai/dsh-system-prompt": "^0.2.0-rc.1",
+    "@deepseek-ai/dsh-token-meter": "^0.2.0-rc.1",
+    "@deepseek-ai/dsh-tool-ask-user": "^0.2.0-rc.1",
+    "@deepseek-ai/dsh-user-approval": "^0.2.0-rc.1",
+    "@deepseek-ai/dsh-user-questions": "^0.2.0-rc.1",
+    "@deepseek-ai/schemastery": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-agent-default-model": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-commands": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-plan-mode": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-sandbox-policy": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session-projection": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-system-prompt": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-token-meter": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-user-questions": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "@types/semver": "^7.8.0",
+    "chokidar": "^4.0.3",
+    "diff": "^9.0.0",
+    "esbuild": "^0.25.0",
+    "semver": "^7.8.5",
+    "typescript": "^5.9.0",
+    "zod": "^4.6.5"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

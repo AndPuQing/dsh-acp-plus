@@ -1,0 +1,53 @@
+# dsh-acp-plus — profile layer for the extended ACP bridge.
+#
+# Installed bundle set: ['@deepseek-ai/dsh-base', 'dsh-acp-plus'].
+# Use this file when the profile does NOT include @deepseek-ai/dsh-acp-app
+# (the shipped `acp` profile already mounts the native bridge; see
+# ./overlay-on-native-acp.yml for that case).
+
+# Same persona the native ACP app applies over the base bundle.
+- id: system-prompt
+  config:
+    personaSuffix: Your working directory is {{cwd}}.
+    personaPrefix: >-
+      You are a coding agent powered by the {{model}} model.
+
+# The transport owns stdout and there is no browser to serve titles to.
+- id: session-title-llm
+  disabled: true
+
+- id: hmr
+  disabled: true
+
+- insert:
+    # Publishes `acpPlusStartup` after a successful argument parse, and binds
+    # stdin EOF to the launcher's bounded shutdown. `--help` publishes nothing,
+    # so the bridge row below waits and stdio stays unclaimed.
+    - id: acp-plus-startup
+      name: 'dsh-acp-plus/app'
+
+    # The model-facing ask_user_question tool; the bridge answers it through
+    # the ACP client's form elicitation (PLAN M5).
+    - id: tool-ask-user
+      name: '@deepseek-ai/dsh-tool-ask-user'
+
+    - id: acp-plus
+      name: 'dsh-acp-plus'
+      inject: [acpPlusStartup]
+      config:
+        # provider/model are deliberately unset: the bridge falls back to the
+        # composition's `agent-default-model` (the Web Models page writes that
+        # same service), so a profile configures its model once. Set them here
+        # only to pin this bridge to a route regardless of the default.
+        sessionListPageSize: 100
+        # M2/M3 landed and are locked by tests/session-load.test.ts and
+        # tests/directories.test.ts. Additional roots are honored through the
+        # existing one-shot escalation with path containment; clients already
+        # choose cwd, so this is the same trust level.
+        enableSessionLoad: true
+        enableAdditionalDirectories: true
+        # Commands and modes (M5) are client-visible additions with no gate;
+        # elicitation activates only for clients declaring form support.
+        # Client terminals are deliberately unsupported (PLAN D9): DSH always
+        # has local command execution, and ACP's one-shot model cannot carry
+        # the harness's persistent-PTY semantics.

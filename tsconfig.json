@@ -1,0 +1,19 @@
+{
+  // Development-only type source: the sibling harness checkout. `extends`
+  // pulls the harness's full compiler options and `paths` map so every
+  // transitive `@deepseek-ai/*` import typechecks against source. Runtime
+  // never uses these paths — dsh resolves the peers from its own installation.
+  // Replace with built `lib/types` paths when checking against an installed dsh.
+  "extends": "../deepseek-harness/tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": "../deepseek-harness",
+    "noEmit": true,
+    "composite": false,
+    "incremental": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "rewriteRelativeImportExtensions": false
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts"]
+}
