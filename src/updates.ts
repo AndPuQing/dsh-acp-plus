@@ -53,19 +53,66 @@ export async function assistantUpdates(
   return updates
 }
 
+/** ACP tool-call category, taken from the protocol's own update shape. */
+type ToolCallKind = NonNullable<Extract<SessionUpdate, { sessionUpdate: 'tool_call' }>['kind']>
+
 /**
  * Start one generic ACP tool lifecycle from the durable call fact.
  * @param event - committed DSH tool-call event.
  * @returns the standard generic tool-call update.
  */
 export function toolCallUpdate(event: SessionEvent<'tool/call'>): SessionUpdate {
+  const rawInput = parseToolArguments(event.data.arguments)
+  const { title, kind } = toolPresentation(event.data.name, rawInput)
   return {
     sessionUpdate: 'tool_call',
     toolCallId: event.data.callId,
-    title: event.data.name,
-    kind: 'other',
+    title,
+    kind,
     status: 'in_progress',
-    rawInput: parseToolArguments(event.data.arguments),
+    rawInput,
+  }
+}
+
+/**
+ * Human title and ACP category for one DSH tool call. Clients pick their card
+ * from `kind` plus `rawInput` — a terminal card needs `execute` and `command` —
+ * so the bare tool name is only the fallback for a tool this bridge does not
+ * know.
+ * @param name - DSH tool name.
+ * @param rawInput - Parsed tool arguments, or the raw string when unparsable.
+ * @returns the ACP title and kind for the call.
+ */
+function toolPresentation(name: string, rawInput: unknown): { title: string; kind: ToolCallKind } {
+  const args = typeof rawInput === 'object' && rawInput !== null
+    ? rawInput as Record<string, unknown>
+    : {}
+  const text = (...keys: string[]): string | undefined => {
+    for (const key of keys) {
+      const value = args[key]
+      if (typeof value === 'string' && value.trim() !== '') return value
+    }
+    return undefined
+  }
+  switch (name) {
+    case 'bash':
+    case 'pwsh':
+      return { title: text('command') ?? name, kind: 'execute' }
+    case 'read':
+    case 'read_image':
+      return { title: text('path', 'file_path') ?? name, kind: 'read' }
+    case 'write':
+    case 'edit':
+      return { title: text('path', 'file_path') ?? name, kind: 'edit' }
+    case 'glob':
+    case 'grep':
+      return { title: text('pattern', 'query') ?? name, kind: 'search' }
+    case 'web_fetch':
+      return { title: text('url') ?? name, kind: 'fetch' }
+    case 'web_search':
+      return { title: text('query') ?? name, kind: 'fetch' }
+    default:
+      return { title: name, kind: 'other' }
   }
 }
 

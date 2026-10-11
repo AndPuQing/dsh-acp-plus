@@ -127,3 +127,29 @@ test('preserves malformed tool input and projects a failed result without hidden
     content: [],
   })
 })
+
+test('names tool calls for client cards instead of the bare tool name', () => {
+  const card = (name: string, args: Record<string, unknown>) => toolCallUpdate({
+    type: 'tool/call',
+    seq: SessionSeq(0),
+    time: 0,
+    data: { turn: 1, step: 1, callId: ToolCallId(`call-${name}`), name, arguments: JSON.stringify(args) },
+  }) as unknown as { title: string; kind: string; rawInput: unknown }
+
+  const bash = card('bash', { command: 'ls -la', description: 'list files' })
+  assert.equal(bash.kind, 'execute')
+  assert.equal(bash.title, 'ls -la')
+  assert.deepEqual(bash.rawInput, { command: 'ls -la', description: 'list files' })
+
+  const read = card('read', { path: '/tmp/a.ts' })
+  assert.equal(read.kind, 'read')
+  assert.equal(read.title, '/tmp/a.ts')
+
+  const grep = card('grep', { pattern: 'TODO' })
+  assert.equal(grep.kind, 'search')
+  assert.equal(grep.title, 'TODO')
+
+  assert.equal(card('web_fetch', { url: 'https://example.com' }).kind, 'fetch')
+  assert.equal(card('todo', { items: [] }).kind, 'other')
+  assert.equal(card('bash', {}).title, 'bash')
+})
