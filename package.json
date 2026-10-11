@@ -58,6 +58,7 @@
     "@deepseek-ai/dsh-tool-ask-user": "^0.2.0-rc.1",
     "@deepseek-ai/dsh-user-approval": "^0.2.0-rc.1",
     "@deepseek-ai/dsh-user-questions": "^0.2.0-rc.1",
+    "@deepseek-ai/dsh-workspace": "^0.2.0-rc.1",
     "@deepseek-ai/schemastery": "*"
   },
   "peerDependenciesMeta": {
@@ -83,6 +84,9 @@
       "optional": true
     },
     "@deepseek-ai/dsh-user-questions": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-workspace": {
       "optional": true
     }
   },

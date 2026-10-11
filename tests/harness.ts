@@ -57,7 +57,11 @@ import * as ToolFs from '@deepseek-ai/dsh-tool-fs'
 import ApprovalService from '@deepseek-ai/dsh-user-approval'
 import UserQuestionService from '@deepseek-ai/dsh-user-questions'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
+import Storage from '@deepseek-ai/dsh-storage'
+import * as StorageDomain from '@deepseek-ai/dsh-storage-domain'
+import * as StorageJson from '@deepseek-ai/dsh-storage-json'
 import TokenMeter from '@deepseek-ai/dsh-token-meter'
+import WorkspaceRegistry from '@deepseek-ai/dsh-workspace'
 import * as AcpPlugin from '../src/index.ts'
 import type { AcpPlusConfig } from '../src/index.ts'
 
@@ -278,6 +282,8 @@ export async function makeBridgeHarness(options: {
   planMode?: boolean
   /** Mount the user-question service and its model-facing tool. */
   userQuestions?: boolean
+  /** Mount the storage stack and dsh's workspace registry for grouping tests. */
+  workspaces?: boolean
   /** Scripted elicitation behavior. */
   elicitation?: Partial<ElicitationFixture['behavior']>
   /** Which bridge to mount; defaults to this repository's extended bridge. */
@@ -298,6 +304,12 @@ export async function makeBridgeHarness(options: {
     })
   }
   await ctx.plugin(JsonlSessionPersistence, { root: persistenceRoot, compression: 'none' })
+  if (options.workspaces === true) {
+    await ctx.plugin(Storage)
+    await ctx.plugin(StorageJson as unknown as Parameters<Context['plugin']>[0], { root: join(persistenceRoot, 'storages') })
+    await ctx.plugin(StorageDomain as unknown as Parameters<Context['plugin']>[0], { backend: 'json' })
+    await ctx.plugin(WorkspaceRegistry)
+  }
   await ctx.plugin(TokenMeter)
   if (options.sandboxMode !== undefined) {
     await ctx.plugin(SandboxPolicyService, { mode: options.sandboxMode, workspaceRoot: process.cwd() })

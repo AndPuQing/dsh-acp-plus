@@ -20,6 +20,13 @@
   disabled: true
 
 - insert:
+    # dsh's workspace registry. `@deepseek-ai/dsh-base` does not load it, so an
+    # ACP session would have no Workspace and the Web sidebar would bucket it
+    # under "ungrouped"; the bridge attaches each session to the workspace for
+    # its cwd. The base profile already mounts the storage stack it injects.
+    - id: workspace
+      name: '@deepseek-ai/dsh-workspace'
+
     # Publishes `acpPlusStartup` after a successful argument parse, and binds
     # stdin EOF to the launcher's bounded shutdown. `--help` publishes nothing,
     # so the bridge row below waits and stdio stays unclaimed.

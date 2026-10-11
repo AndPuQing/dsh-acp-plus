@@ -21,10 +21,12 @@ import type { Context } from '@deepseek-ai/cordis'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import { errorChain } from '@deepseek-ai/dsh-llm'
 import type { AgentOptions, ModelSelection } from '@deepseek-ai/dsh-agent'
-import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { Session, SessionId } from '@deepseek-ai/dsh-session'
 // Side-effect type import: declaration-merges the deployment default-model service.
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-session-persistence'
+// Side-effect type import: declaration-merges `ctx.workspaceRegistry`.
+import type {} from '@deepseek-ai/dsh-workspace'
 // Side-effect type import: declaration-merges the approval waterfall answered below.
 import type {} from '@deepseek-ai/dsh-user-approval'
 // Side-effect type import: declaration-merges `user-questions/request`.
@@ -140,6 +142,24 @@ export function apply(ctx: Context, config: AcpPlusConfig): void {
     } catch (error: unknown) {
       if (error instanceof AcpPlusAdditionalDirectoriesError) throw invalidParams(error.message)
       throw error
+    }
+  }
+
+  /**
+   * Attach one materialized session to the Workspace that owns its cwd, so
+   * workspace-grouped surfaces (the Web sidebar) list ACP sessions under their
+   * project instead of the "ungrouped" bucket. `@deepseek-ai/dsh-base` does not
+   * load the registry, so a deployment without one is a no-op; grouping is
+   * cosmetic and never fails the ACP request.
+   */
+  const attachWorkspace = async (session: Session, cwd: string): Promise<void> => {
+    const registry = ctx.get('workspaceRegistry')
+    if (registry === undefined) return
+    try {
+      const workspace = await registry.create(cwd)
+      await workspace.attachSession(session.id)
+    } catch (error: unknown) {
+      logger.warn(`workspace attach failed for session ${session.id}: ${String(error)}`)
     }
   }
 
@@ -316,6 +336,7 @@ export function apply(ctx: Context, config: AcpPlusConfig): void {
         // The attached log writer's flush materializes an empty session durably.
         await ctx.sessions.flush(record.agent.session)
         assertOpen()
+        await attachWorkspace(record.agent.session, params.cwd)
         publishCommandsAfterResponse(record)
         return { sessionId, configOptions, ...modesOption(record) }
       } catch (error: unknown) {
@@ -408,6 +429,7 @@ export function apply(ctx: Context, config: AcpPlusConfig): void {
           await record.close('connection closed during session/resume')
           throw internalError('connection closed during session/resume')
         }
+        await attachWorkspace(record.agent.session, params.cwd)
         sessions.set(sessionId, record)
         try {
           publishCommandsAfterResponse(record)
@@ -471,6 +493,7 @@ export function apply(ctx: Context, config: AcpPlusConfig): void {
           await record.close('connection closed during session/load')
           throw internalError('connection closed during session/load')
         }
+        await attachWorkspace(record.agent.session, params.cwd)
         // Publish nothing for the id before the whole history plus the final
         // pressure reading are delivered; a concurrent prompt then waits in
         // the request channel instead of interleaving with replay.

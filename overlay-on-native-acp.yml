@@ -10,6 +10,11 @@
   disabled: true
 
 - insert:
+    # dsh's workspace registry (see cordis.patch.yml): without it an ACP session
+    # has no Workspace and grouped surfaces bucket it under "ungrouped".
+    - id: workspace
+      name: '@deepseek-ai/dsh-workspace'
+
     - id: acp-plus-startup
       name: 'dsh-acp-plus/app'
 
