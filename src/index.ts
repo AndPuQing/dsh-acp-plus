@@ -25,8 +25,8 @@ import type { Session, SessionId } from '@deepseek-ai/dsh-session'
 // Side-effect type import: declaration-merges the deployment default-model service.
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-session-persistence'
-// Side-effect type import: declaration-merges `ctx.workspaceRegistry`.
-import type {} from '@deepseek-ai/dsh-workspace'
+// Type import: declaration-merges `ctx.workspaceRegistry` and names its service.
+import type { WorkspaceRegistry } from '@deepseek-ai/dsh-workspace'
 // Side-effect type import: declaration-merges the approval waterfall answered below.
 import type {} from '@deepseek-ai/dsh-user-approval'
 // Side-effect type import: declaration-merges `user-questions/request`.
@@ -146,14 +146,17 @@ export function apply(ctx: Context, config: AcpPlusConfig): void {
   }
 
   /**
-   * Attach one materialized session to the Workspace that owns its cwd, so
-   * workspace-grouped surfaces (the Web sidebar) list ACP sessions under their
-   * project instead of the "ungrouped" bucket. `@deepseek-ai/dsh-base` does not
-   * load the registry, so a deployment without one is a no-op; grouping is
-   * cosmetic and never fails the ACP request.
+   * The workspace registry, when the deployment mounts one. It is reached
+   * through `inject` rather than `ctx.get`: the `workspace` row sits in this
+   * bundle's layer, so a sibling lookup from this fiber misses it while the
+   * injection still binds. Deployments without the row stay `undefined`.
    */
-  const attachWorkspace = async (session: Session, cwd: string): Promise<void> => {
-    const registry = ctx.get('workspaceRegistry')
+  let workspaceRegistry: WorkspaceRegistry | undefined
+  const pendingWorkspaceAttachments: Array<{ session: Session; cwd: string }> = []
+
+  /** Attach one session to the workspace for its cwd; never fails the request. */
+  const attachToWorkspace = async (session: Session, cwd: string): Promise<void> => {
+    const registry = workspaceRegistry
     if (registry === undefined) return
     try {
       const workspace = await registry.create(cwd)
@@ -161,6 +164,33 @@ export function apply(ctx: Context, config: AcpPlusConfig): void {
     } catch (error: unknown) {
       logger.warn(`workspace attach failed for session ${session.id}: ${String(error)}`)
     }
+  }
+
+  ctx.inject(['workspaceRegistry'], (injected) => {
+    workspaceRegistry = injected.workspaceRegistry
+    for (const queued of pendingWorkspaceAttachments.splice(0)) {
+      void attachToWorkspace(queued.session, queued.cwd)
+    }
+    return () => {
+      workspaceRegistry = undefined
+    }
+  })
+
+  /**
+   * Group one materialized session under the Workspace for its cwd, so
+   * workspace-grouped surfaces (the Web sidebar) list ACP sessions under their
+   * project instead of the "ungrouped" bucket. The `workspace` row finishes
+   * its storage bootstrap after the ACP server starts serving, so a session
+   * that arrives first is queued for the injection above instead of blocking
+   * the request. Grouping is cosmetic: a deployment without the registry, or a
+   * registration that rejects, is logged and never fails the ACP request.
+   */
+  const attachWorkspace = async (session: Session, cwd: string): Promise<void> => {
+    if (workspaceRegistry === undefined) {
+      pendingWorkspaceAttachments.push({ session, cwd })
+      return
+    }
+    await attachToWorkspace(session, cwd)
   }
 
   const ownedRecord = (agent: Parameters<AcpPlusSession['owns']>[0]): AcpPlusSession | undefined => {
