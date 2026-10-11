@@ -8,7 +8,8 @@ import assert from 'node:assert/strict'
 import { basename } from 'node:path'
 import { test } from 'node:test'
 import { PROTOCOL_VERSION } from '@agentclientprotocol/sdk'
-import { makeBridgeHarness } from './harness.ts'
+import WorkspaceRegistry from '@deepseek-ai/dsh-workspace'
+import { makeBridgeHarness, waitFor } from './harness.ts'
 
 test('attaches a new session to the workspace owning its cwd', async () => {
   const harness = await makeBridgeHarness({ workspaces: true })
@@ -32,6 +33,23 @@ test('creates a session when the deployment has no workspace registry', async ()
     await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
     const { sessionId } = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
     assert.equal(typeof sessionId, 'string')
+  } finally {
+    await harness.dispose()
+  }
+})
+
+test('queues a session until a late workspace registry is live', async () => {
+  const harness = await makeBridgeHarness({ workspaceStorage: true })
+  try {
+    await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+    const { sessionId } = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
+    // The registry finishes its storage bootstrap after the bridge starts
+    // serving, so this session was queued rather than attached inline.
+    assert.equal(harness.ctx.get('workspaceRegistry'), undefined)
+
+    await harness.ctx.plugin(WorkspaceRegistry)
+    await waitFor(() => harness.ctx.get('workspaceRegistry')?.list()
+      .some(workspace => workspace.sessionIds.some(id => id === sessionId)) === true)
   } finally {
     await harness.dispose()
   }

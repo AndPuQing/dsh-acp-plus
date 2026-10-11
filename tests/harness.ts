@@ -284,6 +284,8 @@ export async function makeBridgeHarness(options: {
   userQuestions?: boolean
   /** Mount the storage stack and dsh's workspace registry for grouping tests. */
   workspaces?: boolean
+  /** Mount only the storage stack, so a test can mount the registry itself later. */
+  workspaceStorage?: boolean
   /** Scripted elicitation behavior. */
   elicitation?: Partial<ElicitationFixture['behavior']>
   /** Which bridge to mount; defaults to this repository's extended bridge. */
@@ -304,10 +306,12 @@ export async function makeBridgeHarness(options: {
     })
   }
   await ctx.plugin(JsonlSessionPersistence, { root: persistenceRoot, compression: 'none' })
-  if (options.workspaces === true) {
+  if (options.workspaces === true || options.workspaceStorage === true) {
     await ctx.plugin(Storage)
     await ctx.plugin(StorageJson as unknown as Parameters<Context['plugin']>[0], { root: join(persistenceRoot, 'storages') })
     await ctx.plugin(StorageDomain as unknown as Parameters<Context['plugin']>[0], { backend: 'json' })
+  }
+  if (options.workspaces === true) {
     await ctx.plugin(WorkspaceRegistry)
   }
   await ctx.plugin(TokenMeter)
