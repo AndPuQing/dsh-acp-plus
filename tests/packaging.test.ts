@@ -3,7 +3,7 @@
  *
  * Two properties must hold before the bundle is installed into a profile:
  * dsh's own plugin-compatibility preflight accepts every `@deepseek-ai/dsh-*`
- * peer against the runtime this checkout targets, and the bundle manifest plus
+ * peer against the runtime the manifest targets, and the bundle manifest plus
  * profile patch point at entries the package actually ships.
  */
 
@@ -11,6 +11,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import semver from 'semver'
 import { evaluatePluginCompatibility } from '../../deepseek-harness/packages/boot/app-boot/src/plugin-compatibility.ts'
 
 interface BundleManifest {
@@ -30,18 +31,30 @@ async function projectJson<T>(...segments: string[]): Promise<T> {
 
 test('the bundle manifest passes the dsh plugin-compatibility preflight', async () => {
   const manifest = await projectJson<BundleManifest>('package.json')
-  // The runtime targeted by this checkout; a profile on another version needs
-  // `dsh plugin allow-version`.
-  const runtime = await projectJson<{ version: string }>(
+  const dshPeers = Object.entries(manifest.peerDependencies)
+    .filter(([name]) => name.startsWith('@deepseek-ai/dsh-'))
+  for (const [name, range] of dshPeers) {
+    assert.notEqual(range, '*', `${name} must carry a concrete runtime range`)
+  }
+  assert.equal(new Set(dshPeers.map(([, range]) => range)).size, 1,
+    'all @deepseek-ai/dsh-* peers must target the same runtime range')
+
+  // Validate against the sibling checkout when it satisfies the declared
+  // range. An older checkout (a common state while the target is a
+  // prerelease) falls back to the range's floor, so the test still guards the
+  // manifest's stated target instead of silently validating an old runtime.
+  const firstPeer = dshPeers[0]
+  assert.ok(firstPeer, 'the manifest must declare at least one @deepseek-ai/dsh-* peer')
+  const range = firstPeer[1]
+  const checkout = await projectJson<{ version: string }>(
     '..', 'deepseek-harness', 'packages', 'boot', 'app-boot', 'package.json',
   )
-
-  assert.equal(evaluatePluginCompatibility(manifest, {}, runtime.version), undefined)
-  for (const [name, range] of Object.entries(manifest.peerDependencies)) {
-    if (name.startsWith('@deepseek-ai/dsh-')) {
-      assert.notEqual(range, '*', `${name} must carry a concrete runtime range`)
-    }
-  }
+  const floor = semver.minVersion(range)
+  assert.ok(floor, `${range} must have a lowest admitted version`)
+  const runtime = semver.satisfies(checkout.version, range, { includePrerelease: true })
+    ? checkout.version
+    : floor.version
+  assert.equal(evaluatePluginCompatibility(manifest, {}, runtime), undefined)
 })
 
 test('the manifest ships its entries and the profile patch references them', async () => {

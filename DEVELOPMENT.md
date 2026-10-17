@@ -56,7 +56,7 @@ Breaking one of these breaks the bridge in ways that are hard to diagnose.
 4. **HMR stays off.** Hot reload over a stdio connection breaks the protocol
    stream; `cordis.patch.yml` disables it.
 5. **Peer versions.** Every `@deepseek-ai/dsh-*` peer must match the running
-   harness version (currently `^0.2.0-rc.1`, locked by
+   harness version (currently `^0.2.1-rc.1`, locked by
    `tests/packaging.test.ts`). A mismatched row is disabled by the plugin
    preflight and needs an explicit `dsh plugin allow-version` exemption.
 6. **`session/new` agents mount no preset.** The ACP bundle keeps model-facing

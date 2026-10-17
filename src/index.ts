@@ -15,6 +15,7 @@
 import { Buffer } from 'node:buffer'
 import { randomUUID } from 'node:crypto'
 import { realpath } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { isAbsolute, resolve } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 import type { Context } from '@deepseek-ai/cordis'
@@ -87,6 +88,9 @@ import { usageUpdate } from './updates.ts'
 
 export { Config }
 export type { AcpPlusConfig }
+
+/** Package version reported to ACP clients; `package.json` is the source of truth. */
+const AGENT_VERSION = (createRequire(import.meta.url)('../package.json') as { version?: string }).version ?? '0.0.0'
 
 /** Stable Cordis plugin name. */
 export const name = 'acp-plus'
@@ -307,7 +311,7 @@ export function apply(ctx: Context, config: AcpPlusConfig): void {
       clientElicitationSupport = params.clientCapabilities?.elicitation?.form != null
       return {
         protocolVersion: PROTOCOL_VERSION,
-        agentInfo: { name: 'dsh-acp-plus', version: '0.1.0' },
+        agentInfo: { name: 'dsh-acp-plus', version: AGENT_VERSION },
         agentCapabilities: {
           // `load` is this bridge's increment over native `resume`; it is only
           // advertised when the deployment opted in and the handler serves it.

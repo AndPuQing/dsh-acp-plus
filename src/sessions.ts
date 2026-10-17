@@ -39,10 +39,10 @@ import { mountAcpMcpServers } from './mcp.ts'
 import { AcpPlusModelControl } from './model-control.ts'
 import { assistantUpdates, toolCallUpdate, toolResultUpdate } from './updates.ts'
 
-/** The continuable-subagent teardown used without depending on the subagent package. */
-interface ContinuableDrain {
-  /** Dispose continuable descendants below exact host-owned parents child-first. */
-  drainContinuableDescendants(parents: readonly Agent[]): Promise<void>
+/** The subagent teardown used without depending on the subagent package. */
+interface SubagentDrain {
+  /** Dispose descendants below exact host-owned parents child-first. */
+  drainDescendants(parents: readonly Agent[]): Promise<void>
 }
 
 /** Inputs shared by fresh and resumed ACP session construction. */
@@ -567,12 +567,12 @@ export class AcpPlusSession {
       } catch (error: unknown) {
         failures.push(new Error('ACP session activity drain failed', { cause: error }))
       }
-      const subagents = this.ctx.get('subagents') as ContinuableDrain | undefined
+      const subagents = this.ctx.get('subagents') as SubagentDrain | undefined
       try {
-        await subagents?.drainContinuableDescendants([this.agent])
+        await subagents?.drainDescendants([this.agent])
       } catch (error: unknown) {
-        this.ctx.logger.warn(`acp-plus: continuable subagent teardown failed: ${errorChain(error)}`)
-        failures.push(new Error('continuable subagent teardown failed', { cause: error }))
+        this.ctx.logger.warn(`acp-plus: subagent teardown failed: ${errorChain(error)}`)
+        failures.push(new Error('subagent teardown failed', { cause: error }))
       }
       try {
         await this.ctx.sessions.flush(this.agent.session)

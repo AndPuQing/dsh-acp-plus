@@ -6,6 +6,7 @@
  */
 
 import assert from 'node:assert/strict'
+import { createRequire } from 'node:module'
 import { test } from 'node:test'
 import { PROTOCOL_VERSION } from '@agentclientprotocol/sdk'
 import { brandString } from '@deepseek-ai/dsh-brand'
@@ -21,7 +22,8 @@ test('advertises the standard automation controls and exact bridge identity', as
     })
 
     assert.equal(response.protocolVersion, PROTOCOL_VERSION)
-    assert.deepEqual(response.agentInfo, { name: 'dsh-acp-plus', version: '0.1.0' })
+    const { version } = createRequire(import.meta.url)('../package.json') as { version: string }
+    assert.deepEqual(response.agentInfo, { name: 'dsh-acp-plus', version })
     assert.deepEqual(response.agentCapabilities, {
       mcpCapabilities: { http: true },
       promptCapabilities: { image: false, audio: false, embeddedContext: false },
