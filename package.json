@@ -1,6 +1,6 @@
 {
   "name": "dsh-acp-plus",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Extended Agent Client Protocol server bundle for DeepSeek Harness (dsh)",
   "license": "MIT",

@@ -5,10 +5,13 @@
 # (the shipped `acp` profile already mounts the native bridge; see
 # ./overlay-on-native-acp.yml for that case).
 
-# Same persona the native ACP app applies over the base bundle.
+# Same persona the native ACP app applies over the base bundle. The working
+# directory reaches the model through dsh's `working-directory:current`
+# runtime context; do not add a `{{cwd}}` persona suffix. dsh 0.2.1 registers
+# only `provider` and `model` as prompt variables, so an unknown variable here
+# fails every turn during prompt assembly.
 - id: system-prompt
   config:
-    personaSuffix: Your working directory is {{cwd}}.
     personaPrefix: >-
       You are a coding agent powered by the {{model}} model.
 
