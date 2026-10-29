@@ -56,7 +56,7 @@ Breaking one of these breaks the bridge in ways that are hard to diagnose.
 4. **HMR stays off.** Hot reload over a stdio connection breaks the protocol
    stream; `cordis.patch.yml` disables it.
 5. **Peer versions.** Every `@deepseek-ai/dsh-*` peer must match the running
-   harness version (currently `^0.2.1-rc.1`, locked by
+   harness version (currently `^0.2.2-alpha.2`, locked by
    `tests/packaging.test.ts`). A mismatched row is disabled by the plugin
    preflight and needs an explicit `dsh plugin allow-version` exemption.
 6. **`session/new` agents mount no preset.** The ACP bundle keeps model-facing
@@ -76,6 +76,8 @@ Breaking one of these breaks the bridge in ways that are hard to diagnose.
 | `src/updates.ts` | `updates.ts` — committed block to `session/update` (with usage) |
 | `src/app.ts` | `packages/bundle/acp-app/src/index.ts` |
 | `src/features/session-load.ts` | Increment: native has no `session/load` replay |
+| `src/features/fork.ts` | Increment: `session/fork` boundary and seed (ported from `packages/api/session-controller`) |
+| `src/features/plan.ts` | Increment: `todos` projection → ACP `plan` updates |
 | `src/features/additional-directories.ts` | Increment: native rejects `additionalDirectories` |
 | `src/features/commands.ts`, `modes.ts`, `elicitation.ts` | Increment: commands, modes, elicitation |
 | `src/features/steering.ts` | Increment: `_session/steering` mid-turn injection |
@@ -87,30 +89,35 @@ compares the committed `session/update` sequences.
 
 Milestones and decisions are tracked in [PLAN.md](./PLAN.md). Current state:
 
-- M0–M1 — native parity (content admission, MCP, route pinning, stop reasons,
-  cursors) locked by the parity suite.
-- M2 — `session/load` replay plus `session/resume`, locked across simulated
-  process restarts.
+- M0–M1 — native parity (content admission, MCP, stop reasons, cursors) locked
+  by the parity suite; model selection now rides `agent.model` as in 0.2.2.
+- M2 — `session/load` replay (including `user_message_chunk`) plus
+  `session/resume`, locked across simulated process restarts; settlement
+  follows the 0.2.2 cancellation/child-drain loop.
 - M3 — `additionalDirectories` authorization and containment-checked
-  pre-approval, reusing the existing escalation mechanism.
+  pre-approval (`fs.processPath` + `dev/ino` identity), reusing the existing
+  escalation mechanism.
 - M4 — client terminals deliberately unsupported (one-shot exec cannot carry
   persistent PTY semantics).
 - M5 — commands, plan mode, form elicitation.
 - M6 — release/packaging; `lib/` is committed so git installs need no build
   step; peers pinned and checked.
 - M7 — `_session/steering` mid-turn injection.
+- M8 — `session/fork` from the latest completed turn (opt-in).
+- M9 — todo-backed ACP `plan` updates, live and after load.
 
 ## Development commands
 
 ```sh
 # Dev dependencies (esbuild, TypeScript, zod). Peer packages come from the
 # running dsh, not from here; if pnpm fails on unpublished workspace peers:
-npm install --ignore-scripts --legacy-peer-deps
+pnpm install --ignore-scripts --legacy-peer-deps
 
-npm run check          # tsc, project files only (paths resolve to ../deepseek-harness)
-npm test               # keyless: esbuild-bundled tests -> node --test
-npm run build          # esbuild -> lib/ (@deepseek-ai/* stay external)
-npm run release:check  # build + lib/manifest/profile/peer checks
+pnpm check             # typecheck gate: tsc over project files, sibling-checkout
+                       # diagnostics filtered (paths resolve to ../deepseek-harness)
+pnpm test              # keyless: esbuild-bundled tests -> node --test
+pnpm build             # esbuild -> lib/ (@deepseek-ai/* stay external)
+pnpm release:check     # build + lib/manifest/profile/peer checks
 
 # Install into a profile and inspect the composition
 dsh plugin --profile acp-plus add .
@@ -123,10 +130,12 @@ node scripts/smoke-client.mjs --prompt "say hi"   # one real model turn
 DSH_BIN="pnpm dsh" node scripts/smoke-client.mjs
 ```
 
-The TypeScript `paths` map points at the sibling `../deepseek-harness` checkout,
-so `npm run check` and `npm test` typecheck and bundle against harness source.
-Runtime never uses those paths; a profile resolves the peers from its own dsh
-installation.
+The TypeScript `paths` map points at the sibling `../deepseek-harness` checkout
+(tag `dsh-v0.2.2-alpha.2`), so `pnpm check` and `pnpm test` typecheck and bundle
+against harness source. That checkout declares Node `>=24.9.0` (pnpm may warn);
+the suite is also verified on Node 22, which is what the bridge itself publishes
+in `engines.node`. Runtime never uses those paths; a profile resolves the peers
+from its own dsh installation.
 
 ## Distribution
 

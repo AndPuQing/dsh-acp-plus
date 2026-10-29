@@ -14,7 +14,7 @@
 | 挂载 | profile patch 层：`base` → `dsh-acp-plus`（或 `acp` → overlay） |
 | 拥有的服务 | 无。只消费 `agents` / `sessions` / `sessionPersistence` / `llm` / `approval` |
 | 不碰 | agent-loop、`SessionEventMap`、核心 Service Definition |
-| 基线 | 先与原生逐字对齐（M0–M1），再叠加增量（M2–M5） |
+| 基线 | 先与原生逐字对齐（M0–M1），再叠加增量（M2–M9） |
 
 **非目标**：重写 agent loop；给 DSH 增加新的持久化事件类型；把 Web/Desktop 的
 presentation 数据塞进 wire；提供 DSH 专属协议扩展（客户端只应看到标准 ACP v1 +
@@ -28,12 +28,14 @@ presentation 数据塞进 wire；提供 DSH 专属协议扩展（客户端只应
 |---|---|---|---|
 | M0 | 基线可跑 | 基本 handler + 投影 + 权限 + teardown | 官方 SDK 客户端完成一轮 text prompt |
 | M1 | 与原生对齐 | content/mcp/codec/model-control 完整 | 既有 ACP e2e 场景在本服务器下等价通过 |
-| M2 | 会话生命周期 | `session/load` 回放、`resume`、cursor 分页 | 重启进程后可恢复并回放历史 |
-| M3 | 多工作区 | `additionalDirectories` + 信任模型 | 未授权目录请求失败；授权目录内工具可用 |
+| M2 | 会话生命周期 | `session/load` 回放（含用户消息）、`resume`、cursor 分页 | ✅ 重启进程后可恢复并回放历史 |
+| M3 | 多工作区 | `additionalDirectories` + 信任模型 | ✅ 未授权目录请求失败；授权目录内工具可用 |
 | M4 | 终端 | ~~ACP client terminal~~ 评估后放弃（D8/D9，实现已删除） | — |
 | M5 | 交互扩展 | elicitation(`ctx.userQuestions`)、commands、modes | ✅ 已落地并测试 |
 | M6 | 发布 | 打包、版本、兼容策略、文档 | 干净环境 `dsh plugin add` 后可直接用 |
 | M7 | steering 扩展 | `_session/steering` 中途注入（zeron / org adapters） | ✅ 已落地并测试 |
+| M8 | fork 会话 | `session/fork`：从最近已完成回合分叉出可恢复子会话 | ✅ 已落地并测试 |
+| M9 | plan 更新 | `todos` projection → ACP `plan`（live + load） | ✅ 已落地并测试 |
 
 依赖顺序：M0 → M1 必须完成才动 M2+（否则增量无法与基线区分）。M3/M4/M5 相互独立，
 可并行。
@@ -91,7 +93,7 @@ presentation 数据塞进 wire；提供 DSH 专属协议扩展（客户端只应
 |---|---|---|---|
 | 内容准入 | 原生 `content.ts` | text 合并、`resource_link` 转 `[resource_link name=… uri=…]`、图片校验与持久化、exact route 图片能力复核 | ✅ `src/content.ts` |
 | MCP | 原生 `mcp.ts` | `session/new` 的 stdio / streamable-http 条目校验、挂载失败回滚未发布 agent | ✅ `src/mcp.ts`（挂载在 `agents.create.setup` 内） |
-| 路由钉住 | 原生 `model-control.ts` | `snapshot()` → `onInboxClaimed` → `pinTurn` → `turn/end` → `releaseTurn` | ✅ |
+| 路由钉住 | 原生 `model-control.ts` | 0.2.2 起由 `agent.model`（`Model.current()/select()`）承担一次回合的路线固定；bridge 只维护 catalog → config options 映射 | ✅ |
 | stopReason | 原生 `codec.ts` | 取消 / 提交失败 / Agent 失败 / 正常结束的优先级 | ✅ |
 | 列表分页 | 原生 `index.ts` | base64url keyset cursor、`session.list` 的 `cwd` 物理身份过滤 | ✅ |
 | 更新串行 | 原生 `session.ts` | 单条 `outputTail`，失败只告警不断链 | ✅ |
@@ -131,6 +133,11 @@ max-tokens、reasoning + tool 生命周期 + usage + 收尾文本、cancel 中�
    `usage_update`；发布前 id 不在 `sessions` 里，并发 prompt 无法与回放交错。
 4. ✅ `initialize` 仅在 `enableSessionLoad` 为真时广告 `loadSession: true`；
    `sessionCapabilities.resume` 从此始终广告（handler 已实现）。
+5. ✅ **0.2.2-alpha.2 同步（2025-10）**：结算按上游 `acp/src/session.ts` 重写为
+   `cancellationDone` + `onAgentStatus` + `settleAfterQuiescence()` 的
+   idle-seq / 子代理 drain 循环（含 `waitForChildren`），`agent/error` 不再被
+   旧 turn guard 吞掉；回放补发 `user_message_chunk`（`messageId` = 消息 id），
+   并跳过被 `surfaceOp: replace` 遮蔽的 seq，实时/回放序列继续逐条相等。
 
 **决策记录（D6）**：回放不重放历史 `usage_update`。它是「当前 context 压力」而非
 转录事实，只有折叠完整日志的 live 度量才有意义；loader 在历史之后发布一次最终读数。
@@ -183,6 +190,10 @@ agent 可达面，必须：
 - ✅ 默认 `workspace-write` 部署下，授权根内的一次 `write`/`edit` 真实可用
   （`danger-full-access` 只作用于该次调用，且调用路径已过 containment 检查），
   不需要任何核心改动。
+- ✅ **0.2.2 同步（2025-10）**：containment 改用正式 API `fs.processPath(target)`，
+  不再解析未承诺的 `FsTargetKey` 字符串；词法快路径之外按祖先目录 `dev/ino`
+  物理身份回退（与上游 `fs-sandbox` 的 containment 同法），`processPath` 抛错
+  一律按“不包含”处理，回退为询问客户端。
 
 **边界与残余风险**：
 
@@ -324,13 +335,72 @@ agentclientprotocol org adapters，zeron 的 ACP driver 消费：客户端在
 
 ---
 
+### M8 — `session/fork`（增量）
+
+**范围**：`features/fork.ts` + `AcpPlusSession.fork` + `index.ts` 的 `forkSession`。
+SDK 1.4.0 已提供实验性的 `session/fork`（`methods.agent.session.fork`）。
+
+**完成记录（2025-10）**：
+
+- ✅ **广告**：仅在 `enableSessionFork` 开启时广告 `sessionCapabilities.fork: {}`；
+  默认关闭，与 `session/load` 一致。
+- ✅ **源校验**：`authorizeWorkspace`（cwd + additionalDirectories）、
+  `origin !== 'subagent'`、`sameDirectory(source.cwd, params.cwd)`；源是 live 会话
+  时先 `ctx.sessions.flush()`，保证持久化读到完整前缀。
+- ✅ **切点**：`latestCompletedPrefixBoundary(events)` 移植自上游
+  `session-controller/src/commands.ts`——以最后一个 `turn/end` 为界，向后吞掉独立
+  事件，遇到 `turn/start`、追加型 `user/message`、`agent/inbox/spliced` 停止；
+  没有已完成回合 → invalid params。
+- ✅ **子会话**：`buildForkSeed(events, boundary)` + `SessionLogOffset(boundary + 1)`
+  + `ctx.agents.create({ meta: { cwd, isSeeded: true } })`；setup 与 create/resume
+  共用（模型选择、additionalDirectories 上下文、MCP servers），fork 不复制第三份
+  构造逻辑。
+- ✅ 子会话注册进 `sessions`、flush、attachWorkspace、推 commands，可继续被
+  `session/list` / `load` / `resume` 使用。
+
+**验收**：完整一轮后 fork 出新 id，历史可回放且可继续 prompt；live 源中途 fork 只
+继承已完成前缀；无已完成回合拒绝；subagent 源与 cwd 不匹配拒绝。
+
+**测试**：`tests/fork.test.ts`：durable/resumable 子会话、live 中途 fork 前缀、
+无回合拒绝、subagent/cwd 拒绝、历史 `parentSession` fork 允许、未开启不广告。
+
+---
+
+### M9 — ACP plan 更新（增量）
+
+**范围**：`features/plan.ts`，消费可选 `tool-todo` 注册的 `todos` projection
+（`TodoItem[] | null`）。该包不是本项目的依赖，因此按注册表发布的契约
+（`onChanged` + `snapshot`）结构化读取，不绑定具体插件。
+
+**完成记录（2025-10）**：
+
+- ✅ **映射**：`todoPlanValue` 只接受结构良好的列表（`content: string` + 合法
+  `status`）；priority 统一 `medium`（todo 没有重要度轴）；空列表发 `entries: []`
+  （`plan_removed` 需要 planId，不适用）；`null` 与非法值不发布。
+- ✅ **live**：`ctx.inject(['sessionProjections'])` → `onChanged`，只认 `todos`
+  键，按 session 精确定位本 bridge 的 record 后经 `publishUpdate` 走该会话自己的
+  更新队列；其它 projection 键不进 plan 通道。
+- ✅ **load**：resume 之后、发布 sessionId 之前，用 `snapshot(session).values.todos`
+  发一次初始 plan（回放本身不驱动 projection），与 usage 读数同一位置。
+- ✅ 未挂载注册表或没有 `todos` 单元时静默跳过。
+
+**验收**：回合内 todo 变化 → 客户端收到整体 `plan` 替换；`session/load` 后立即收到
+当前列表；其它 projection 键不进入 plan 通道。
+
+**测试**：`tests/plan.test.ts`：映射单测、真实注册表上的 live/load e2e（注册测试
+专用 `todos` 单元，随用户消息折叠）、无注册表静默。
+
+---
+
 ## 3. 缺口 → 机制 映射
 
 | ACP 能力 | 接的机制 | 里程碑 |
 |---|---|---|
-| `session/load` 回放 | `ctx.sessionPersistence` 读流 + `updates.ts` 投影 | M2 |
-| fork / seeded 会话 | `ctx.sessions.create(id, { seed })` + persistence 头字段 | M2（可选） |
-| `additionalDirectories` | `ctx.sandbox` / `ctx.permissionPresets` + header 记录 | M3 |
+| `session/load` 回放 | `ctx.sessionPersistence` 读流 + `updates.ts` 投影（含 `user_message_chunk`） | M2 ✅ |
+| fork / seeded 会话 | `buildForkSeed` + `ctx.agents.create({ seed, inheritedEventCount, isSeeded })` | M8 ✅ |
+| `additionalDirectories` | `ctx.sandbox` / `ctx.permissionPresets` + header 记录 | M3 ✅ |
+| ACP `plan` 更新 | `todos` projection（`onChanged` + `snapshot`）→ 整体替换 `plan` | M9 ✅ |
+| `session/delete` | 上游没有删除会话的 API，本轮不实现 | 阻塞（D3） |
 | terminals | —— 评估后放弃：本地执行已足够，ACP 一次性 exec 无法承载持久 PTY（D8/D9） | M4 |
 | elicitation | `ctx.userQuestions` provider → ACP `elicitation/create` form | M5 ✅ |
 | commands / modes | `ctx.commands` → `available_commands_update`；`plan/mode` + `session/set_mode` | M5 ✅ |
@@ -350,7 +420,7 @@ agentclientprotocol org adapters，zeron 的 ACP driver 消费：客户端在
 | bridge 单测 | `tests/bridge.test.ts` | 官方 SDK + 内存流 + mock `LlmAdapter`，不联网 | ✅ |
 | 协议等价 | `tests/parity.test.ts` | 同一输入下本项目与原生 `session/update` 序列相等 | ✅ 6 个场景（握手/文本/max-tokens/工具链/取消/错误） |
 | keyless e2e | `tests/e2e/` | 真启动 profile，用官方 SDK 客户端驱动 | 待办（M6 前） |
-| 快照 | 录制回放 | 非平凡协议可见变更必须加场景（对应仓库 `docs/testing.md` 的规则） | ✅ M2 回放由 `tests/session-load.test.ts` 的跨 harness 重放锁定；随 M3–M5 扩展 |
+| 快照 | 录制回放 | 非平凡协议可见变更必须加场景（对应仓库 `docs/testing.md` 的规则） | ✅ M2 回放由 `tests/session-load.test.ts` 的跨 harness 重放锁定；M3–M9 各有专项测试 |
 
 运行：`node scripts/run-tests.mjs`（测试由 esbuild 打包后交给 `node --test`；
 直接 import `../src/*.ts`，用 tsconfig `paths` 指向 sibling harness checkout）。
@@ -374,7 +444,12 @@ agentclientprotocol org adapters，zeron 的 ACP driver 消费：客户端在
 - [x] D2 elicitation 采用 ACP 标准 `elicitation/create` form 模式（SDK 1.4.0 已提供
   `methods.client.elicitation.create` 与 `clientCapabilities.elicitation.form`），
   不引入自定义扩展方法。见 §2 M5。
-- [ ] D3 是否提供 `session/delete`（原生没有；涉及持久化语义）
+- [x] D3 `session/delete` **本轮不实现（blocked on upstream）**：harness 的
+  `SessionPersistence` 只有 `create`/`open`/`flush`/`stat`/`list`，`SessionStore`
+  没有删除入口，Web 端的“删除”只是 workspace archive（`archivedSessionIds`），
+  不是删日志。广告一个做不到的能力是协议谎言，因此**不广告**
+  `sessionCapabilities.delete`。等上游提供 `SessionPersistence.remove` 后再做；
+  备选是本地 tombstone（只从 `session/list` 隐藏、不删磁盘），同样留到需要时。
 - [ ] D4 MCP resources 是在本仓库做兼容层，还是推上游改 `mcp-client`
 - [x] D5 分发形态：本地 checkout / git（`private: true`，`lib/` 随仓库提交，安装零
   构建），暂不发布 npm；需要 npm 时先选定 scope。见 §2 M6。

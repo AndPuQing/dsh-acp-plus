@@ -24,6 +24,8 @@ export interface AcpPlusConfig {
   stream?: Stream
   /** Advertise and serve `session/load` (M2; transcript replay on reopen). */
   enableSessionLoad?: boolean
+  /** Advertise and serve `session/fork` (M8; child session from a completed prefix). */
+  enableSessionFork?: boolean
   /**
    * Accept `additionalDirectories` on session lifecycle requests (M3).
    * Verified single-target writes under a declared root are pre-approved
@@ -41,6 +43,8 @@ export const Config: Schema<AcpPlusConfig> = Schema.object({
     .description('Maximum sessions returned by one session/list page.'),
   enableSessionLoad: Schema.boolean().default(false)
     .description('Advertise and serve session/load: replay the persisted transcript after reopening.'),
+  enableSessionFork: Schema.boolean().default(false)
+    .description('Advertise and serve session/fork: branch a new session from the latest completed turn.'),
   enableAdditionalDirectories: Schema.boolean().default(false)
     .description('Accept additionalDirectories; verified single-target writes under a declared root are pre-approved.'),
 })
@@ -60,6 +64,7 @@ export interface AcpPlusSpec {
   /** Feature gates, resolved once at mount. */
   features: {
     sessionLoad: boolean
+    sessionFork: boolean
     additionalDirectories: boolean
   }
 }
@@ -81,6 +86,7 @@ export function resolveSpec(config: AcpPlusConfig): AcpPlusSpec {
     stream: config.stream,
     features: {
       sessionLoad: config.enableSessionLoad ?? false,
+      sessionFork: config.enableSessionFork ?? false,
       additionalDirectories: config.enableAdditionalDirectories ?? false,
     },
   }

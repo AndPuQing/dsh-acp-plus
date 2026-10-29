@@ -29,7 +29,8 @@
       config:
         # provider/model fall back to this profile's `agent-default-model`;
         # set them here to pin the extended bridge to an explicit route.
-        # session/load and additionalDirectories ship enabled; client terminals
-        # are deliberately unsupported (PLAN D9).
+        # session/load, additionalDirectories, and session/fork ship enabled;
+        # client terminals are deliberately unsupported (PLAN D9).
         enableSessionLoad: true
         enableAdditionalDirectories: true
+        enableSessionFork: true

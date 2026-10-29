@@ -13,7 +13,12 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { PROTOCOL_VERSION } from '@agentclientprotocol/sdk'
+import { PROTOCOL_VERSION, type SessionUpdate } from '@agentclientprotocol/sdk'
+import type { Context } from '@deepseek-ai/cordis'
+import { brandString } from '@deepseek-ai/dsh-brand'
+import { createUserMessage, type UserMessage } from '@deepseek-ai/dsh-llm'
+import { SessionSeq, type SessionEvent, type SessionId } from '@deepseek-ai/dsh-session'
+import { replaySession } from '../src/features/session-load.ts'
 import { makeBridgeHarness, textResponse } from './harness.ts'
 
 /** Flatten a request's message contents for a substring search. */
@@ -51,7 +56,14 @@ test('replays a persisted transcript and continues it after a restart', async ()
     })
 
     assert.ok(Array.isArray(loaded.configOptions))
-    assert.deepEqual(second.updates, liveUpdates)
+    // Replay restores the user's prompt too, which the live path never echoes
+    // back; the assistant transcript around it must match byte for byte.
+    const replayedUsers = second.updates.filter(update => update.sessionUpdate === 'user_message_chunk')
+    assert.deepEqual(replayedUsers.map(update => update.content), [{ type: 'text', text: 'first prompt' }])
+    assert.deepEqual(
+      second.updates.filter(update => update.sessionUpdate !== 'user_message_chunk'),
+      liveUpdates,
+    )
 
     const continued = await second.client.prompt({
       sessionId: created.sessionId,
@@ -65,6 +77,59 @@ test('replays a persisted transcript and continues it after a restart', async ()
   } finally {
     await rm(root, { recursive: true, force: true })
   }
+})
+
+/** Fabricate one user-message event with its required surface intent. */
+function userEvent(
+  seq: number,
+  text: string,
+  surfaceOp: SessionEvent['surfaceOp'],
+): { event: SessionEvent; message: UserMessage } {
+  const message = createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
+  return {
+    message,
+    event: {
+      type: 'user/message',
+      seq: SessionSeq(seq),
+      time: seq,
+      data: message,
+      surfaceOp,
+      ...typeof surfaceOp === 'object' ? { sourceEventSeqs: [SessionSeq(0), SessionSeq(1)] } : {},
+    } as unknown as SessionEvent,
+  }
+}
+
+/** Replay a fabricated event log through a persistence stub. */
+async function replayEvents(events: readonly SessionEvent[]): Promise<SessionUpdate[]> {
+  const ctx = {
+    sessionPersistence: {
+      open: () => Promise.resolve({
+        read: () => Promise.resolve({ events }),
+        close: () => Promise.resolve(),
+      }),
+    },
+    get: () => undefined,
+  } as unknown as Context
+  const updates: SessionUpdate[] = []
+  await replaySession(ctx, brandString<SessionId>('session-replay'), ({ update }) => {
+    updates.push(update)
+    return Promise.resolve()
+  })
+  return updates
+}
+
+test('replays user messages in order and skips surface nodes a replacement hid', async () => {
+  const first = userEvent(0, 'first prompt', 'append')
+  const second = userEvent(1, 'second prompt', 'append')
+  const summary = userEvent(2, 'condensed prompt', { op: 'replace', startSeq: SessionSeq(0), endSeq: SessionSeq(1) })
+
+  assert.deepEqual(await replayEvents([first.event, second.event]), [
+    { sessionUpdate: 'user_message_chunk', messageId: first.message.id, content: { type: 'text', text: 'first prompt' } },
+    { sessionUpdate: 'user_message_chunk', messageId: second.message.id, content: { type: 'text', text: 'second prompt' } },
+  ])
+  assert.deepEqual(await replayEvents([first.event, second.event, summary.event]), [
+    { sessionUpdate: 'user_message_chunk', messageId: summary.message.id, content: { type: 'text', text: 'condensed prompt' } },
+  ])
 })
 
 test('does not advertise or serve session/load unless enabled', async () => {

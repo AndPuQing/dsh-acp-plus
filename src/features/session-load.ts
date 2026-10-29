@@ -32,9 +32,10 @@
  * @module dsh-acp-plus/features/session-load
  */
 
-import type { SessionNotification } from '@agentclientprotocol/sdk'
+import type { SessionNotification, SessionUpdate } from '@agentclientprotocol/sdk'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Session, SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
+import { assistantBlockToAcp } from '../content.ts'
 import { assistantUpdates, toolCallUpdate, toolResultUpdate } from '../updates.ts'
 
 /**
@@ -46,6 +47,29 @@ import { assistantUpdates, toolCallUpdate, toolResultUpdate } from '../updates.t
  * resumed Agent exists.
  */
 const REPLAY_SESSION = { requestContext: () => undefined } as unknown as Session
+
+/**
+ * Read one persisted session's validated contiguous event log.
+ * @param ctx - plugin context carrying session persistence.
+ * @param sessionId - persisted session to read.
+ * @param signal - optional request cancellation.
+ * @returns the committed events oldest first, after the read handle is closed.
+ */
+export async function readSessionEvents(
+  ctx: Context,
+  sessionId: SessionId,
+  signal?: AbortSignal,
+): Promise<readonly SessionEvent[]> {
+  const options = signal === undefined ? undefined : { signal }
+  const handle = await ctx.sessionPersistence.open(sessionId, 'read', options)
+  try {
+    return (await handle.read(0, undefined, options)).events
+  } finally {
+    // A read failure is the actionable cause; a close failure on the same
+    // broken handle adds nothing.
+    await handle.close().catch(() => {})
+  }
+}
 
 /**
  * Read and project one persisted session's transcript, oldest first.
@@ -61,25 +85,19 @@ export async function replaySession(
   notify: (notification: SessionNotification) => Promise<void>,
   signal?: AbortSignal,
 ): Promise<void> {
-  const options = signal === undefined ? undefined : { signal }
-  const handle = await ctx.sessionPersistence.open(sessionId, 'read', options)
-  let events: readonly SessionEvent[]
-  try {
-    events = (await handle.read(0, undefined, options)).events
-  } catch (error: unknown) {
-    try {
-      await handle.close()
-    } catch {
-      // The read failure is the actionable cause; a close failure on the same
-      // broken handle adds nothing.
-    }
-    throw error
-  }
-  await handle.close()
+  const events = await readSessionEvents(ctx, sessionId, signal)
+  // Compaction-style replacement nodes take surface nodes out of the visible
+  // transcript; replay only what the current surface still shows.
+  const shadowed = shadowedSurfaceSeqs(events)
 
   for (const event of events) {
     signal?.throwIfAborted()
-    if (event.type === 'assistant/message') {
+    if (shadowed.has(event.seq)) continue
+    if (event.type === 'user/message') {
+      for (const update of await userMessageUpdates(ctx, event)) {
+        await notify({ sessionId, update })
+      }
+    } else if (event.type === 'assistant/message') {
       for (const update of await assistantUpdates(ctx, REPLAY_SESSION, event)) {
         await notify({ sessionId, update })
       }
@@ -89,4 +107,44 @@ export async function replaySession(
       await notify({ sessionId, update: await toolResultUpdate(ctx, event) })
     }
   }
+}
+
+/**
+ * Collect every surface node hidden by a `replace` operation. A replacement
+ * cites the inclusive `startSeq..endSeq` it displaces; later replacements may
+ * in turn displace earlier replacement nodes, so the union is the visible
+ * complement.
+ * @param events - complete source log in seq order.
+ * @returns seqs whose surface nodes a replacement removed.
+ */
+function shadowedSurfaceSeqs(events: readonly SessionEvent[]): ReadonlySet<number> {
+  const shadowed = new Set<number>()
+  for (const event of events) {
+    if (typeof event.surfaceOp !== 'object') continue
+    for (let seq: number = event.surfaceOp.startSeq; seq <= event.surfaceOp.endSeq; seq += 1) {
+      shadowed.add(seq)
+    }
+  }
+  return shadowed
+}
+
+/**
+ * Convert one committed user message into standard user chunks, one per block,
+ * mirroring how the live path would have streamed it.
+ * @param ctx - bridge context carrying the attachment store.
+ * @param event - committed user-message event.
+ * @returns ordered `user_message_chunk` updates.
+ */
+async function userMessageUpdates(
+  ctx: Context,
+  event: SessionEvent<'user/message'>,
+): Promise<SessionUpdate[]> {
+  const updates: SessionUpdate[] = []
+  for (const block of event.data.content) {
+    const content = await assistantBlockToAcp(ctx, block)
+    if (content !== undefined) {
+      updates.push({ sessionUpdate: 'user_message_chunk', messageId: event.data.id, content })
+    }
+  }
+  return updates
 }

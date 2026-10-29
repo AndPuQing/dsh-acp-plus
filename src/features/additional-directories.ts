@@ -32,8 +32,9 @@
  * @module dsh-acp-plus/features/additional-directories
  */
 
+import type { BigIntStats } from 'node:fs'
 import { realpath, stat } from 'node:fs/promises'
-import { isAbsolute, resolve, sep } from 'node:path'
+import { dirname, isAbsolute, resolve, sep } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-sandbox-policy'
@@ -68,12 +69,10 @@ async function canonicalDirectory(path: string): Promise<string | undefined> {
 }
 
 /**
- * Whether `path` is `root` or a descendant of it, using canonical spellings.
- * The identity fallback fs-sandbox applies for exotic aliases is deliberately
- * omitted: a miss only forwards the ask to the client, never over-approves.
- * @param path - canonical target key from the filesystem provider.
+ * Whether `path` is `root` or a descendant of it, comparing spellings only.
+ * @param path - execution-world target path from the filesystem provider.
  * @param root - canonical declared root.
- * @returns whether the target is contained.
+ * @returns whether the target is lexically contained.
  */
 export function isPathUnder(path: string, root: string): boolean {
   if (path === root) return true
@@ -81,6 +80,53 @@ export function isPathUnder(path: string, root: string): boolean {
   return process.platform === 'win32'
     ? path.toLowerCase().startsWith(prefix.toLowerCase())
     : path.startsWith(prefix)
+}
+
+/** Codes that mean the path does not exist yet, which is not a containment answer. */
+const MISSING_CODES: ReadonlySet<string | undefined> = new Set(['ENOENT', 'ENOTDIR'])
+
+/** One path's identity, or undefined when it does not exist. */
+async function statIfPresent(path: string): Promise<BigIntStats | undefined> {
+  try {
+    return await stat(path, { bigint: true })
+  } catch (error: unknown) {
+    if (MISSING_CODES.has((error as NodeJS.ErrnoException).code)) return undefined
+    throw error
+  }
+}
+
+/** Whether two stats name the same filesystem object. */
+function sameIdentity(left: BigIntStats, right: BigIntStats): boolean {
+  return left.dev === right.dev && left.ino === right.ino
+}
+
+/**
+ * Whether one execution-world path lies inside any declared root.
+ *
+ * The lexical fast path handles canonical spellings. When spellings differ,
+ * each target ancestor's filesystem identity is compared with the root's, so
+ * an alias of a declared root (a symlinked temp directory, a bind mount) still
+ * counts. Ported from `packages/fs/fs-sandbox/src/containment.ts`; a miss only
+ * forwards the ask to the client, never over-approves.
+ * @param path - execution-world target path.
+ * @param roots - canonical declared roots.
+ * @returns whether the target is the root or a descendant of it.
+ */
+async function containedInRoots(path: string, roots: readonly string[]): Promise<boolean> {
+  if (roots.some(root => isPathUnder(path, root))) return true
+  for (const root of roots) {
+    const rootInfo = await statIfPresent(root)
+    if (rootInfo === undefined) continue
+    let ancestor = path
+    while (true) {
+      const ancestorInfo = await statIfPresent(ancestor)
+      if (ancestorInfo !== undefined && sameIdentity(ancestorInfo, rootInfo)) return true
+      const parent = dirname(ancestor)
+      if (parent === ancestor) break
+      ancestor = parent
+    }
+  }
+  return false
 }
 
 /**
@@ -145,14 +191,17 @@ export async function preApprovedEscalation(
   const fs = ctx.get('fs')
   if (fs === undefined) return false
   let target: Awaited<ReturnType<typeof fs.resolve>>
+  let processPath: string
   try {
     target = await fs.resolve(filePath, {
       ...session.header.cwd === undefined ? {} : { cwd: session.header.cwd },
     })
+    // The target key is opaque; only the provider may translate it into a path.
+    processPath = fs.processPath(target)
   } catch (_unresolvableTarget) {
     return false
   }
-  return roots.some(root => isPathUnder(String(target.targetKey), root))
+  return containedInRoots(processPath, roots)
 }
 
 /**

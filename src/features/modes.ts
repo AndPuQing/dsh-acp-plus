@@ -15,11 +15,8 @@
 import type { SessionMode, SessionModeState } from '@agentclientprotocol/sdk'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-// Type-only: declaration-merges `ctx.planMode` and the `plan` projection key.
+// Type-only: declaration-merges `ctx.planMode`.
 import type {} from '@deepseek-ai/dsh-plan-mode'
-import type { Session } from '@deepseek-ai/dsh-session'
-// Type-only: declaration-merges `ctx.sessionProjections`.
-import type {} from '@deepseek-ai/dsh-session-projection'
 
 /** ACP mode id for ordinary execution. */
 export const DEFAULT_MODE_ID = 'default'
@@ -57,13 +54,18 @@ export function availableSessionModes(ctx: Context): readonly SessionMode[] {
 }
 
 /**
- * Read the session's committed plan-mode state from the plan projection.
- * @param ctx - plugin context carrying the projection registry.
- * @param session - durable session whose history is folded.
- * @returns whether plan mode is active.
+ * Read the agent's plan-mode state from the controller that owns it.
+ *
+ * A selection made during an open turn stays pending until the next in-turn
+ * pre-step; reporting the selected state keeps the ACP mode in step with what
+ * the session will actually present.
+ * @param ctx - plugin context carrying the optional plan-mode controller.
+ * @param agent - exact live agent whose mode is read.
+ * @returns whether plan mode is active or selected.
  */
-export function planModeActive(ctx: Context, session: Session): boolean {
-  return ctx.get('sessionProjections')?.stateOf(session, 'plan')?.active === true
+export function planModeActive(ctx: Context, agent: Agent): boolean {
+  const state = ctx.get('planMode')?.get(agent)
+  return state === undefined ? false : state.pending ?? state.active
 }
 
 /**
@@ -73,13 +75,13 @@ export function planModeActive(ctx: Context, session: Session): boolean {
  * `modes` entirely, keeping the wire identical to the native bridge until a
  * deployment opts into the plan-mode feature.
  * @param ctx - plugin context carrying the optional plan-mode controller.
- * @param session - durable session whose committed mode is read.
+ * @param agent - exact live agent whose mode is read.
  * @returns current mode id plus every available mode, or undefined.
  */
-export function sessionModeState(ctx: Context, session: Session): SessionModeState | undefined {
+export function sessionModeState(ctx: Context, agent: Agent): SessionModeState | undefined {
   if (ctx.get('planMode') === undefined) return undefined
   return {
-    currentModeId: planModeActive(ctx, session) ? PLAN_MODE_ID : DEFAULT_MODE_ID,
+    currentModeId: planModeActive(ctx, agent) ? PLAN_MODE_ID : DEFAULT_MODE_ID,
     availableModes: [...availableSessionModes(ctx)],
   }
 }

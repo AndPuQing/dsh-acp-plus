@@ -56,6 +56,10 @@
         # choose cwd, so this is the same trust level.
         enableSessionLoad: true
         enableAdditionalDirectories: true
+        # session/fork (M8): clients branch a new resumable session from the
+        # source's latest completed turn. Opt-in like load; the SDK method is
+        # still marked experimental upstream.
+        enableSessionFork: true
         # Commands and modes (M5) are client-visible additions with no gate;
         # elicitation activates only for clients declaring form support.
         # Client terminals are deliberately unsupported (PLAN D9): DSH always

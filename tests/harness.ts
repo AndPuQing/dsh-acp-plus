@@ -20,6 +20,8 @@ import {
   type Agent as AcpAgent,
   type CreateElicitationRequest,
   type CreateElicitationResponse,
+  type ForkSessionRequest,
+  type ForkSessionResponse,
   type LoadSessionRequest,
   type LoadSessionResponse,
   type PromptRequest,
@@ -56,11 +58,12 @@ import * as ToolAskUser from '@deepseek-ai/dsh-tool-ask-user'
 import * as ToolFs from '@deepseek-ai/dsh-tool-fs'
 import ApprovalService from '@deepseek-ai/dsh-user-approval'
 import UserQuestionService from '@deepseek-ai/dsh-user-questions'
-import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
+import * as JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import Storage from '@deepseek-ai/dsh-storage'
 import * as StorageDomain from '@deepseek-ai/dsh-storage-domain'
 import * as StorageJson from '@deepseek-ai/dsh-storage-json'
 import TokenMeter from '@deepseek-ai/dsh-token-meter'
+import WorkingDirectory from '@deepseek-ai/dsh-working-directory'
 import WorkspaceRegistry from '@deepseek-ai/dsh-workspace'
 import * as AcpPlugin from '../src/index.ts'
 import type { AcpPlusConfig } from '../src/index.ts'
@@ -242,6 +245,8 @@ export interface BridgeClient {
   loadSession: (params: LoadSessionRequest) => Promise<LoadSessionResponse>
   /** Normalized to always resolve a response object; the SDK type also allows void. */
   resumeSession: (params: ResumeSessionRequest) => Promise<ResumeSessionResponse>
+  /** Normalized to always resolve a response object; the SDK type also allows void. */
+  forkSession: (params: ForkSessionRequest) => Promise<ForkSessionResponse>
   closeSession: NonNullable<AcpAgent['closeSession']>
   setSessionConfigOption: NonNullable<AcpAgent['setSessionConfigOption']>
   setSessionMode: (params: SetSessionModeRequest) => Promise<SetSessionModeResponse>
@@ -260,6 +265,8 @@ export interface BridgeHarness {
   permissionRequests: RequestPermissionRequest[]
   elicitation: ElicitationFixture
   persistenceRoot: string
+  /** The bridge's own plugin fiber, so a test can dispose it in isolation. */
+  bridgeFiber: Awaited<ReturnType<Context['plugin']>>
   dispose: () => Promise<void>
 }
 
@@ -305,7 +312,10 @@ export async function makeBridgeHarness(options: {
       model: options.defaultModel.model,
     })
   }
-  await ctx.plugin(JsonlSessionPersistence, { root: persistenceRoot, compression: 'none' })
+  await ctx.plugin(
+    { name: JsonlSessionPersistence.name, apply: JsonlSessionPersistence.apply },
+    { root: persistenceRoot, compression: 'none' },
+  )
   if (options.workspaces === true || options.workspaceStorage === true) {
     await ctx.plugin(Storage)
     await ctx.plugin(StorageJson as unknown as Parameters<Context['plugin']>[0], { root: join(persistenceRoot, 'storages') })
@@ -321,6 +331,8 @@ export async function makeBridgeHarness(options: {
   if (options.filesystemTools === true) {
     await ctx.plugin(ApprovalService)
     await ctx.plugin(SandboxedFileSystem, {})
+    // tool-fs injects the directory owner; it must see the confining backend as `fs`.
+    await ctx.plugin(WorkingDirectory)
     await ctx.plugin(ToolFs as unknown as Parameters<Context['plugin']>[0], {})
   }
   if (options.commands === true) await ctx.plugin(CommandRuntime)
@@ -360,6 +372,7 @@ export async function makeBridgeHarness(options: {
     permissionRequests,
     elicitation,
     persistenceRoot,
+    bridgeFiber: undefined as unknown as BridgeHarness['bridgeFiber'],
     client: undefined as unknown as BridgeClient,
     dispose: async () => {
       await ctx.fiber.dispose()
@@ -401,13 +414,13 @@ export async function makeBridgeHarness(options: {
       model: 'mock',
       ...config.sessionListPageSize === undefined ? {} : { sessionListPageSize: config.sessionListPageSize },
     }
-    await ctx.plugin({
+    harness.bridgeFiber = await ctx.plugin({
       name: 'native-acp-test',
       inject: [...NativeAcp.inject],
       apply: (inner: Context) => { NativeAcp.apply(inner, nativeConfig) },
     })
   } else {
-    await ctx.plugin({
+    harness.bridgeFiber = await ctx.plugin({
       name: 'acp-plus-test',
       inject: [...AcpPlugin.inject],
       apply: (inner: Context) => { AcpPlugin.apply(inner, config) },
@@ -422,6 +435,7 @@ export async function makeBridgeHarness(options: {
     listSessions: params => client.request(methods.agent.session.list, params),
     loadSession: async params => (await client.request(methods.agent.session.load, params)) ?? {},
     resumeSession: async params => (await client.request(methods.agent.session.resume, params)) ?? {},
+    forkSession: async params => (await client.request(methods.agent.session.fork, params)) ?? {},
     closeSession: params => client.request(methods.agent.session.close, params),
     setSessionConfigOption: params => client.request(methods.agent.session.setConfigOption, params),
     setSessionMode: async params => (await client.request(methods.agent.session.setMode, params)) ?? {},

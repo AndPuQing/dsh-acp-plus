@@ -18,12 +18,25 @@ import {
   type SessionConfigOption,
   type SessionModeState,
   type SessionNotification,
+  type SessionUpdate,
   type StopReason,
 } from '@agentclientprotocol/sdk'
-import type { Agent, AgentHandle, AgentOptions, ModelSelection } from '@deepseek-ai/dsh-agent'
+import {
+  installModelSelection,
+  type Agent,
+  type AgentHandle,
+  type AgentOptions,
+  type AgentStatus,
+} from '@deepseek-ai/dsh-agent'
 import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage, errorChain, type UserMessage } from '@deepseek-ai/dsh-llm'
-import { type Session, type SessionEvent, type SessionId, type TurnEndReason } from '@deepseek-ai/dsh-session'
+import {
+  type Session,
+  type SessionEvent,
+  type SessionId,
+  type SessionLogOffset,
+  type TurnEndReason,
+} from '@deepseek-ai/dsh-session'
 import { AcpPlusContentError, admitAcpPrompt } from './content.ts'
 import { turnEndToStopReason } from './codec.ts'
 import { preApprovedEscalation, registerAdditionalDirectoriesContext } from './features/additional-directories.ts'
@@ -39,10 +52,12 @@ import { mountAcpMcpServers } from './mcp.ts'
 import { AcpPlusModelControl } from './model-control.ts'
 import { assistantUpdates, toolCallUpdate, toolResultUpdate } from './updates.ts'
 
-/** The subagent teardown used without depending on the subagent package. */
+/** The subagent lifecycle used without depending on the subagent package. */
 interface SubagentDrain {
   /** Dispose descendants below exact host-owned parents child-first. */
   drainDescendants(parents: readonly Agent[]): Promise<void>
+  /** Observe currently managed descendants without closing future admission. */
+  waitForChildren(parent: Agent): Promise<boolean>
 }
 
 /** Inputs shared by fresh and resumed ACP session construction. */
@@ -55,8 +70,6 @@ interface AcpPlusSessionBuildOptions {
   additionalDirectories: readonly string[]
   /** Per-agent route options from deployment config. */
   agentOptions: AgentOptions
-  /** Deployment provider/model selection, or undefined when a listener supplies it. */
-  fallbackSelection: ModelSelection | undefined
   /** JSON-RPC request cancellation. */
   signal: AbortSignal
   /** Ordered update delivery owned by the bridge. */
@@ -75,6 +88,16 @@ export interface ResumeAcpPlusSessionOptions extends AcpPlusSessionBuildOptions 
   sessionId: SessionId
 }
 
+/** Forked ACP session construction inputs. */
+export interface ForkAcpPlusSessionOptions extends AcpPlusSessionBuildOptions {
+  /** Fresh identity minted for `session/fork`. */
+  sessionId: SessionId
+  /** Source prefix, inherited-cut marker, and synthetic closers. */
+  seed: readonly SessionEvent[]
+  /** Number of events copied from the source, excluding synthetic closers. */
+  inheritedEventCount: SessionLogOffset
+}
+
 /** One in-flight prompt and the state its settlement depends on. */
 interface InflightPrompt {
   resolve: (reason: StopReason) => void
@@ -86,7 +109,8 @@ interface InflightPrompt {
   admissionDone: Promise<void>
   finishAdmission: () => void
   admissionController: AbortController
-  cancelRequested: boolean
+  cancellationDone: PromiseWithResolvers<void>
+  cancelStartedIdle: boolean
   settlementStarted: boolean
   outputError: Error | undefined
   agentError: Error | undefined
@@ -102,31 +126,29 @@ function internalError(detail: string): RequestError {
   return RequestError.internalError(undefined, detail)
 }
 
-/** Restore the latest logged route before falling back to deployment config. */
-function selectionFor(
-  logged: {
-    config: { provider: string; model: string; reasoningEffort?: ModelSelection['reasoningEffort'] }
-    adapterDefaults?: { reasoningEffort?: boolean }
-  } | undefined,
-  fallback: ModelSelection | undefined,
-): ModelSelection | undefined {
-  return logged === undefined
-    ? fallback
-    : {
-      provider: logged.config.provider,
-      model: logged.config.model,
-      ...logged.config.reasoningEffort === undefined || logged.adapterDefaults?.reasoningEffort === true
-        ? {}
-        : { reasoningEffort: logged.config.reasoningEffort },
-    }
-}
-
 /** Parse one committed tool call's model-supplied arguments without failing the bridge. */
 function parseToolArguments(value: string): unknown {
   try {
     return JSON.parse(value) as unknown
   } catch (_invalidModelJson) {
     return undefined
+  }
+}
+
+/**
+ * Shared composition callback for every ACP-owned Agent, fresh, resumed, or
+ * forked: the model-selection projection, the client's declared additional
+ * roots, and this request's MCP servers, all before publication.
+ * @param options - the lifecycle request's workspace-facing inputs.
+ * @returns the Agent setup callback accepted by `create` and `resume`.
+ */
+function setupAgent(options: AcpPlusSessionBuildOptions): (agentCtx: Context) => Promise<void> {
+  return async (agentCtx: Context): Promise<void> => {
+    installModelSelection(agentCtx)
+    // The declaration is a session-level grant; the sandbox stays at its
+    // standing mode and reach is realized per call through escalation.
+    registerAdditionalDirectoriesContext(agentCtx, options.additionalDirectories)
+    await mountAcpMcpServers(agentCtx, options.mcpServers, options.cwd)
   }
 }
 
@@ -144,7 +166,6 @@ export class AcpPlusSession {
   private closing: Promise<void> | undefined
   /** Current slash-command execution, aborted by session cancellation or close. */
   private commandAbort: AbortController | undefined
-  private readonly pendingSelections = new Map<string, ModelSelection>()
   /** Model-supplied arguments of in-flight tool calls, for escalation checks. */
   private readonly toolCalls = new Map<string, { name: string; arguments: unknown }>()
   /** Client-declared additional workspace roots, canonical and deduplicated. */
@@ -153,12 +174,11 @@ export class AcpPlusSession {
   private constructor(
     private readonly ctx: Context,
     handle: AgentHandle,
-    modelControl: AcpPlusModelControl,
     additionalDirectories: readonly string[],
     private readonly notify: (notification: SessionNotification) => Promise<void>,
   ) {
     this.agent = handle.agent
-    this.modelControl = modelControl
+    this.modelControl = new AcpPlusModelControl(ctx.llm, handle.agent.model)
     this.additionalDirectories = additionalDirectories
     this.disposeAgent = () => handle.dispose()
   }
@@ -172,21 +192,14 @@ export class AcpPlusSession {
    * @returns the fully composed per-session module.
    */
   static async create(ctx: Context, options: CreateAcpPlusSessionOptions): Promise<AcpPlusSession> {
-    const modelControl = new AcpPlusModelControl(ctx.llm, options.fallbackSelection)
     const handle = await ctx.agents.create({
       sessionId: options.sessionId,
       meta: { cwd: options.cwd },
       agentOptions: options.agentOptions,
       signal: options.signal,
-      setup: async (agentCtx) => {
-        modelControl.install(agentCtx)
-        // The declaration is a session-level grant; the sandbox stays at its
-        // standing mode and reach is realized per call through escalation.
-        registerAdditionalDirectoriesContext(agentCtx, options.additionalDirectories)
-        await mountAcpMcpServers(agentCtx, options.mcpServers, options.cwd)
-      },
+      setup: setupAgent(options),
     })
-    return new AcpPlusSession(ctx, handle, modelControl, options.additionalDirectories, options.notify)
+    return new AcpPlusSession(ctx, handle, options.additionalDirectories, options.notify)
   }
 
   /**
@@ -196,26 +209,34 @@ export class AcpPlusSession {
    * @returns the restored per-session module.
    */
   static async resume(ctx: Context, options: ResumeAcpPlusSessionOptions): Promise<AcpPlusSession> {
-    let modelControl: AcpPlusModelControl | undefined
     const handle = await ctx.agents.resume({
       resumeSessionId: options.sessionId,
       agentOptions: options.agentOptions,
       signal: options.signal,
-      setup: async (agentCtx, agent) => {
-        modelControl = new AcpPlusModelControl(
-          ctx.llm,
-          selectionFor(agent.session.requestHeader(), options.fallbackSelection),
-        )
-        modelControl.install(agentCtx)
-        registerAdditionalDirectoriesContext(agentCtx, options.additionalDirectories)
-        await mountAcpMcpServers(agentCtx, options.mcpServers, options.cwd)
-      },
+      setup: setupAgent(options),
     })
-    if (modelControl === undefined) {
-      await handle.dispose()
-      throw internalError('session/resume did not compose model selection')
-    }
-    return new AcpPlusSession(ctx, handle, modelControl, options.additionalDirectories, options.notify)
+    return new AcpPlusSession(ctx, handle, options.additionalDirectories, options.notify)
+  }
+
+  /**
+   * Compose a child Agent from an already-validated fork seed. The seed is
+   * copied and validated by the factory before publication, so a rejected seed
+   * never leaves a half-created session behind.
+   * @param ctx - plugin context carrying the agent factory, LLM, and persistence.
+   * @param options - fresh identity, seed, workspace, route, MCP, and notifier.
+   * @returns the composed child session module.
+   */
+  static async fork(ctx: Context, options: ForkAcpPlusSessionOptions): Promise<AcpPlusSession> {
+    const handle = await ctx.agents.create({
+      sessionId: options.sessionId,
+      seed: options.seed,
+      inheritedEventCount: options.inheritedEventCount,
+      meta: { cwd: options.cwd, isSeeded: true },
+      agentOptions: options.agentOptions,
+      signal: options.signal,
+      setup: setupAgent(options),
+    })
+    return new AcpPlusSession(ctx, handle, options.additionalDirectories, options.notify)
   }
 
   /**
@@ -269,11 +290,20 @@ export class AcpPlusSession {
   }
 
   /**
+   * Publish one out-of-band standard update for this session.
+   * @param update - already-validated update (currently the ACP plan).
+   */
+  publishUpdate(update: SessionUpdate): void {
+    if (this.closing !== undefined) return
+    this.enqueue(() => this.notify({ sessionId: this.agent.session.id, update }))
+  }
+
+  /**
    * Read the complete ACP mode state for this session.
    * @returns current mode id plus every mode this deployment offers, or undefined.
    */
   modeState(): SessionModeState | undefined {
-    return sessionModeState(this.ctx, this.agent.session)
+    return sessionModeState(this.ctx, this.agent)
   }
 
   /**
@@ -338,7 +368,8 @@ export class AcpPlusSession {
       admissionDone: admission.promise,
       finishAdmission: admission.resolve,
       admissionController,
-      cancelRequested: false,
+      cancellationDone: Promise.withResolvers<void>(),
+      cancelStartedIdle: false,
       settlementStarted: false,
       outputError: undefined,
       agentError: undefined,
@@ -349,7 +380,9 @@ export class AcpPlusSession {
     if (requestSignal?.aborted === true) onRequestAbort()
     try {
       let admissionFailure: unknown
-      const promptSelection = this.modelControl.snapshot()
+      // The route recorded for this admission follows the Agent's next step; a
+      // later select applies from the following step, matching the native bridge.
+      const promptSelection = this.agent.model.current()
       try {
         if (this.ctx.agents.get(this.agent.id) !== this.agent) {
           throw internalError('prompt was not queued: the agent was disposed outside the bridge')
@@ -371,12 +404,10 @@ export class AcpPlusSession {
         })
         inflight.messageId = message.id
         inflight.messageQueued = true
-        if (promptSelection !== undefined) this.pendingSelections.set(message.id, promptSelection)
         try {
           this.agent.followup(message)
         } catch (error: unknown) {
           inflight.messageQueued = false
-          this.pendingSelections.delete(message.id)
           throw error
         }
       } catch (error: unknown) {
@@ -385,7 +416,7 @@ export class AcpPlusSession {
         inflight.finishAdmission()
       }
 
-      if (inflight.cancelRequested) {
+      if (inflight.admissionController.signal.aborted) {
         this.settleAfterQuiescence(inflight)
         return { stopReason: await completion.promise }
       }
@@ -424,7 +455,7 @@ export class AcpPlusSession {
    */
   steer(text: string): boolean {
     const inflight = this.inflight
-    if (inflight === undefined || inflight.cancelRequested || this.agent.status !== 'running') return false
+    if (inflight === undefined || inflight.admissionController.signal.aborted || this.agent.status !== 'running') return false
     this.agent.steer(createUserMessage({
       content: [{ type: 'text', text }],
       source: { kind: 'user' },
@@ -438,6 +469,12 @@ export class AcpPlusSession {
    * @param event - committed durable event.
    */
   onSessionEvent(session: Session, event: SessionEvent): void {
+    // A correlated prompt follows each later turn of its own run; a fresh
+    // `turn/start` also retires the previous turn's end reason.
+    if (event.type === 'turn/start' && this.inflight?.turn !== undefined) {
+      this.inflight.turn = event.data.turn
+      this.inflight.endReason = undefined
+    }
     // Record arguments before the async projection queue so a subsequent
     // approval ask for the same call sees them.
     if (event.type === 'tool/call') {
@@ -489,36 +526,43 @@ export class AcpPlusSession {
       const inflight = this.inflight
       if (inflight !== undefined && event.type === 'turn/end' && inflight.turn === event.data.turn) {
         inflight.endReason = event.data.reason
+        inflight.agentError = undefined
       }
-      if (event.type === 'turn/end') this.modelControl.releaseTurn(event.data.turn)
     }
   }
 
   /**
-   * Correlate an accepted user message with its Agent turn and pinned route.
+   * Correlate an accepted user message with its Agent turn.
    * @param message - claimed durable inbox message.
    * @param turn - allocated Agent turn.
    */
   onInboxClaimed(message: UserMessage, turn: number): void {
     if (this.inflight !== undefined && this.inflight.messageId === message.id) this.inflight.turn = turn
-    const selection = this.pendingSelections.get(message.id)
-    this.pendingSelections.delete(message.id)
-    if (selection !== undefined) this.modelControl.pinTurn(turn, selection)
   }
 
   /**
    * Correlate an Agent interval failure with the active ACP prompt.
-   * @param turn - failed turn number.
    * @param error - original same-process failure.
    */
-  onAgentError(turn: number, error: unknown): void {
+  onAgentError(error: unknown): void {
     const inflight = this.inflight
     if (inflight === undefined || !inflight.messageQueued) return
-    // AgentLoop balances an in-turn failure with durable turn/end; settlement
-    // reads that exact error reason. This slot records interval failures outside it.
-    if (inflight.turn === turn) return
+    // A later committed turn/end supersedes this live failure. Failed turn
+    // start/end appends have no terminal record and keep the failure observable.
     inflight.agentError = new Error(errorChain(error))
     this.settleAfterQuiescence(inflight)
+  }
+
+  /**
+   * Complete cancelled activity without following a later root driver.
+   * @param status - the emitted transition, which may precede a reentrant wake.
+   */
+  onAgentStatus(status: AgentStatus): void {
+    const inflight = this.inflight
+    if (inflight === undefined || !inflight.messageQueued || !inflight.admissionController.signal.aborted) return
+    // Maintenance remains publicly idle; its next running transition belongs
+    // to work released after the maintenance task finished.
+    if (status === 'idle' || inflight.cancelStartedIdle) inflight.cancellationDone.resolve(this.outputTail)
   }
 
   /** Await every update queued before this call. */
@@ -584,7 +628,6 @@ export class AcpPlusSession {
       } catch (error: unknown) {
         failures.push(error)
       }
-      this.pendingSelections.clear()
       this.toolCalls.clear()
       if (failures.length === 1) throw failures[0]
       if (failures.length > 1) {
@@ -624,10 +667,20 @@ export class AcpPlusSession {
   private cancelPrompt(detail: string): void {
     const inflight = this.inflight
     if (inflight === undefined) return
-    inflight.cancelRequested = true
+    const firstCancellation = !inflight.admissionController.signal.aborted
+    if (firstCancellation) inflight.cancelStartedIdle = this.agent.status === 'idle'
     inflight.admissionController.abort(new Error(detail))
     this.settleAfterQuiescence(inflight)
-    if (inflight.messageQueued) this.agent.cancel({ kind: 'user' })
+    if (!inflight.messageQueued) {
+      inflight.cancellationDone.resolve()
+      return
+    }
+    this.agent.cancel({ kind: 'user' })
+    if (firstCancellation) {
+      const done = inflight.cancellationDone
+      // Plugin disposal can detach status observers before this activity retires.
+      void this.agent.whenIdle().then(() => { done.resolve(this.outputTail) }, done.reject)
+    }
   }
 
   private settleAfterQuiescence(inflight: InflightPrompt): void {
@@ -636,12 +689,25 @@ export class AcpPlusSession {
     void (async () => {
       await inflight.admissionDone
       if (inflight.messageQueued) {
-        await this.agent.whenIdle()
-        await this.outputTail
+        const subagents = this.ctx.get('subagents') as SubagentDrain | undefined
+        const cancelled = inflight.cancellationDone.promise
+        const isCancelled = (): boolean => inflight.admissionController.signal.aborted
+        const idleAt = (seq: Session['seq']): boolean => this.agent.status === 'idle' && this.agent.session.seq === seq
+        while (true) {
+          await Promise.race([this.agent.whenIdle(), cancelled])
+          if (isCancelled()) break
+          const idleSeq = this.agent.session.seq
+          const children = await Promise.race([subagents?.waitForChildren(this.agent), cancelled])
+          if (isCancelled()) break
+          if (children || !idleAt(idleSeq)) continue
+          await this.outputTail
+          if (isCancelled() || idleAt(idleSeq)) break
+        }
+        if (isCancelled()) await cancelled
       }
       if (this.inflight !== inflight) return
       this.inflight = undefined
-      if (inflight.cancelRequested) {
+      if (inflight.admissionController.signal.aborted) {
         inflight.resolve('cancelled')
         return
       }

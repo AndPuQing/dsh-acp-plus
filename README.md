@@ -6,8 +6,9 @@ packaged as an out-of-tree Cordis plugin and profile bundle.
 
 It serves the standard ACP v1 surface and adds the capabilities the shipped
 automation-only `@deepseek-ai/dsh-acp` bridge deliberately omits — transcript
-replay, extra workspace roots, slash commands, plan mode, form elicitation, and
-mid-turn steering — without changing the harness core.
+replay, session forking, extra workspace roots, slash commands, plan mode, todo
+plan updates, form elicitation, and mid-turn steering — without changing the
+harness core.
 
 ```sh
 dsh --profile acp-plus
@@ -18,8 +19,13 @@ dsh --profile acp-plus
 - **Standard ACP v1** — sessions (`new` / `list` / `resume` / `close`), prompts
   and cancellation, model and reasoning-effort config options, MCP servers
   (stdio and streamable HTTP), images, permissions, usage, and tool updates.
-- **`session/load`** — reopen a persisted session, replay its transcript, and
-  continue prompting across process restarts.
+- **`session/load`** — reopen a persisted session, replay its transcript
+  (assistant output, tool activity, and the user's own messages), and continue
+  prompting across process restarts.
+- **`session/fork`** — branch a new durable session from the latest completed
+  turn of an existing one; the child replays the inherited prefix and can be
+  prompted, listed, loaded, and resumed like any other session (opt-in via
+  `enableSessionFork`, experimental in the ACP SDK).
 - **Additional directories** — declare extra workspace roots on a session;
   verified single-target writes inside them are pre-approved through the
   harness's existing sandbox escalation, while everything else still asks the
@@ -30,6 +36,9 @@ dsh --profile acp-plus
   `elicitation/create` form when the client declares support.
 - **Steering** — the `_session/steering` extension injects text into a live
   turn at its next step, and hands the text back when the turn already ended.
+- **Plan updates** — when the deployment mounts the todo tool, its `todos`
+  projection is mirrored onto standard ACP `plan` updates, live during a turn
+  and once after `session/load`; absent that tool, the bridge stays silent.
 - **Default-model fallback** — with no provider/model in its own config, the
   bridge follows the composition's `agent-default-model` (the same default the
   dsh Web Models page writes).
@@ -39,7 +48,7 @@ dsh --profile acp-plus
 - Node.js >= 22
 - DeepSeek Harness (`dsh`) with a model route configured. The plugin's
   `@deepseek-ai/dsh-*` peers are pinned to the running harness version
-  (`^0.2.1-rc.1`).
+  (`^0.2.2-alpha.2`).
 
 ## Install
 
@@ -110,10 +119,10 @@ The profile patch configures the bridge row:
 | `model` | string | `agent-default-model` | Exact model id (e.g. `deepseek-v4-flash`). |
 | `sessionListPageSize` | integer >= 1 | `100` | Maximum sessions returned by one `session/list` page. |
 | `enableSessionLoad` | boolean | `false` | Advertise and serve `session/load` transcript replay. |
+| `enableSessionFork` | boolean | `false` | Advertise and serve `session/fork` (child session from the latest completed turn). |
 | `enableAdditionalDirectories` | boolean | `false` | Accept `additionalDirectories` with containment-checked pre-approval. |
 
-The shipped profile enables both `enableSessionLoad` and
-`enableAdditionalDirectories`.
+The shipped profile enables all three opt-ins.
 
 Inspect the composed configuration and its schema:
 
@@ -132,8 +141,8 @@ shared across profiles by putting them in `$DSH_HOME/cordis.patch.yml`.
 
 Note that a DSH patch replaces the whole `config` object of the row it targets:
 overriding the `acp-plus` row requires restating `sessionListPageSize`,
-`enableSessionLoad`, and `enableAdditionalDirectories`. Configuring only the
-model does not touch that row.
+`enableSessionLoad`, `enableSessionFork`, and `enableAdditionalDirectories`.
+Configuring only the model does not touch that row.
 
 API keys are home-level and shared by every profile
 (`$DSH_HOME/.credentials.yaml`, written by the Web Models page or supplied
@@ -149,17 +158,20 @@ keeps its protocol semantics and extends them:
 | Sessions, prompts, cancel, MCP, images, config options | yes | yes (parity) |
 | `session/resume`, `session/list`, `session/close` | yes | yes |
 | `session/load` transcript replay | no | yes |
+| `session/fork` | no | yes (opt-in) |
 | `additionalDirectories` | no | yes |
 | Commands, modes | no | yes |
+| ACP `plan` updates (from the todo tool) | no | yes |
 | Form elicitation | no | yes |
 | `_session/steering` | no | yes |
+| `session/delete` | no | no — no delete API upstream |
 
 ## Compatibility
 
 - Standard ACP v1 plus the advertised session capabilities and the
   `_session/steering` extension; clients that do not know an extension ignore
   it.
-- All `@deepseek-ai/dsh-*` peers are pinned to `^0.2.1-rc.1` and checked by
+- All `@deepseek-ai/dsh-*` peers are pinned to `^0.2.2-alpha.2` and checked by
   dsh's plugin preflight. On a different harness version, grant the
   exact-version exemption the diagnostic describes
   (`dsh plugin allow-version <name>@<version>`).

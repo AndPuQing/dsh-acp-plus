@@ -39,12 +39,16 @@ async function scratch(): Promise<{ root: string; make: (name: string) => Promis
 }
 
 /** Context stub whose fs resolves physically and whose policy reports `mode`. */
-function escalationCtx(mode: 'read-only' | 'workspace-write' | 'danger-full-access'): Context {
+function escalationCtx(
+  mode: 'read-only' | 'workspace-write' | 'danger-full-access',
+  processPath: (target: { targetKey: string }) => string = target => target.targetKey,
+): Context {
   return {
     get(name: string) {
       if (name === 'sandboxPolicy') return { resolve: () => ({ mode }) }
       if (name === 'fs') return {
         resolve: async (path: string) => ({ targetKey: await realpath(path).catch(() => resolve(path)) }),
+        processPath,
       }
       return undefined
     },
@@ -105,6 +109,45 @@ test('pre-approves only verified single-target writes inside a declared root', a
     assert.equal(await preApprovedEscalation(escalationCtx('workspace-write'), SESSION, roots, 'bash', `cat ${target}`), false)
     assert.equal(await preApprovedEscalation(escalationCtx('workspace-write'), SESSION, roots, 'write', undefined), false)
     assert.equal(await preApprovedEscalation(escalationCtx('workspace-write'), SESSION, [], 'write', target), false)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('recognizes a declared root reported through a non-canonical alias', async () => {
+  const { root, make } = await scratch()
+  try {
+    const real = await make('real')
+    const link = join(root, 'alias')
+    await symlink(real, link)
+    const roots = [await realpath(real)]
+    // The provider reports the alias spelling, which is lexically outside the
+    // canonical root but physically the same directory: only filesystem
+    // identity can contain it.
+    const aliasTarget = join(link, 'nested', 'file.txt')
+
+    assert.equal(await preApprovedEscalation(
+      escalationCtx('workspace-write'), SESSION, roots, 'write', aliasTarget,
+    ), true)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('forwards the ask when the provider cannot map a target to a path', async () => {
+  const { root, make } = await scratch()
+  try {
+    const inside = await make('inside')
+    const roots = [await realpath(inside)]
+    const target = join(inside, 'file.txt')
+
+    assert.equal(await preApprovedEscalation(
+      escalationCtx('workspace-write', () => { throw new Error('opaque target') }),
+      SESSION,
+      roots,
+      'write',
+      target,
+    ), false)
   } finally {
     await rm(root, { recursive: true, force: true })
   }

@@ -14,7 +14,7 @@ import { PROTOCOL_VERSION } from '@agentclientprotocol/sdk'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import { ToolCallId, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import type { SessionId } from '@deepseek-ai/dsh-session'
-import { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
+import { defineContentToolFixture } from '@deepseek-ai/dsh-tool-testkit'
 import {
   errorResponse,
   makeBridgeHarness,

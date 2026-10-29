@@ -43,6 +43,8 @@ import {
   type CancelNotification,
   type CloseSessionRequest,
   type CloseSessionResponse,
+  type ForkSessionRequest,
+  type ForkSessionResponse,
   type InitializeRequest,
   type InitializeResponse,
   type ListSessionsRequest,
@@ -71,8 +73,10 @@ import {
   authorizeAdditionalDirectories,
 } from './features/additional-directories.ts'
 import { answerWithElicitation, type AcpElicitationHost } from './features/elicitation.ts'
+import { forkPrefix } from './features/fork.ts'
 import { AcpPlusSessionModeError } from './features/modes.ts'
-import { replaySession } from './features/session-load.ts'
+import { sessionPlan, subscribeTodoPlans } from './features/plan.ts'
+import { readSessionEvents, replaySession } from './features/session-load.ts'
 import {
   parseSteeringRequest,
   STEERING_METHOD,
@@ -255,6 +259,13 @@ export function apply(ctx: Context, config: AcpPlusConfig): void {
     for (const record of sessions.values()) record.publishCommands()
   })
 
+  // The optional `todos` projection drives the ACP plan: every change is a
+  // wholesale update, delivered only to the record that owns the session.
+  subscribeTodoPlans(ctx, (session, update) => {
+    const record = sessions.get(session.header.id)
+    if (record?.ownsSession(session) === true) record.publishUpdate(update)
+  })
+
   ctx.on('session/event', (session, event) => {
     const record = sessions.get(session.header.id)
     if (record?.ownsSession(session) === true) record.onSessionEvent(session, event)
@@ -264,8 +275,12 @@ export function apply(ctx: Context, config: AcpPlusConfig): void {
     ownedRecord(agent)?.onInboxClaimed(message, turn)
   })
 
-  ctx.on('agent/error', ({ agent, turn, error }) => {
-    ownedRecord(agent)?.onAgentError(turn, error)
+  ctx.on('agent/error', ({ agent, error }) => {
+    ownedRecord(agent)?.onAgentError(error)
+  })
+
+  ctx.on('agent/status', ({ agent, status }) => {
+    ownedRecord(agent)?.onAgentStatus(status)
   })
 
   ctx.on('llm/adapters-updated', () => {
@@ -322,6 +337,9 @@ export function apply(ctx: Context, config: AcpPlusConfig): void {
             close: {},
             list: {},
             resume: {},
+            // Fork is this bridge's increment over native; advertise it only
+            // when the deployment opted in and the handler serves it.
+            ...spec.features.sessionFork ? { fork: {} } : {},
             ...spec.features.additionalDirectories ? { additionalDirectories: {} } : {},
           },
         },
@@ -348,8 +366,7 @@ export function apply(ctx: Context, config: AcpPlusConfig): void {
           cwd: params.cwd,
           mcpServers: params.mcpServers,
           additionalDirectories,
-          agentOptions: agentOptions(spec),
-          fallbackSelection: initialSelection(),
+          agentOptions: agentOptions(spec, initialSelection()),
           signal,
           notify,
         })
@@ -398,7 +415,6 @@ export function apply(ctx: Context, config: AcpPlusConfig): void {
           || activating.has(header.id)
           || ctx.sessions.get(header.id) !== undefined
           || header.origin === 'subagent'
-          || header.parentSession !== undefined
           || header.cwd === undefined
           || !isAbsolute(header.cwd)
         ) return undefined
@@ -431,7 +447,7 @@ export function apply(ctx: Context, config: AcpPlusConfig): void {
       activating.add(sessionId)
       return (async (): Promise<ResumeSessionResponse> => {
         const persisted = (await persistence.stat(sessionId, { signal }))?.header
-        if (persisted === undefined || persisted.origin === 'subagent' || persisted.parentSession !== undefined) {
+        if (persisted === undefined || persisted.origin === 'subagent') {
           throw invalidParams(`session is not resumable: ${sessionId}`)
         }
         if (!await sameDirectory(persisted.cwd, params.cwd)) {
@@ -444,8 +460,7 @@ export function apply(ctx: Context, config: AcpPlusConfig): void {
             cwd: params.cwd,
             mcpServers: params.mcpServers ?? [],
             additionalDirectories,
-            agentOptions: agentOptions(spec),
-            fallbackSelection: initialSelection(),
+            agentOptions: agentOptions(spec, initialSelection()),
             signal,
             notify,
           })
@@ -487,7 +502,7 @@ export function apply(ctx: Context, config: AcpPlusConfig): void {
       activating.add(sessionId)
       return (async (): Promise<LoadSessionResponse> => {
         const persisted = (await persistence.stat(sessionId, { signal }))?.header
-        if (persisted === undefined || persisted.origin === 'subagent' || persisted.parentSession !== undefined) {
+        if (persisted === undefined || persisted.origin === 'subagent') {
           throw invalidParams(`session is not loadable: ${sessionId}`)
         }
         if (!await sameDirectory(persisted.cwd, params.cwd)) {
@@ -508,8 +523,7 @@ export function apply(ctx: Context, config: AcpPlusConfig): void {
             cwd: params.cwd,
             mcpServers: params.mcpServers ?? [],
             additionalDirectories,
-            agentOptions: agentOptions(spec),
-            fallbackSelection: initialSelection(),
+            agentOptions: agentOptions(spec, initialSelection()),
             signal,
             notify,
           })
@@ -529,8 +543,11 @@ export function apply(ctx: Context, config: AcpPlusConfig): void {
         }
         await attachWorkspace(record.agent.session, params.cwd)
         // Publish nothing for the id before the whole history plus the final
-        // pressure reading are delivered; a concurrent prompt then waits in
-        // the request channel instead of interleaving with replay.
+        // state readings are delivered; a concurrent prompt then waits in the
+        // request channel instead of interleaving with replay. Replay starts no
+        // projection drive, so the current plan is read from the registry.
+        const plan = sessionPlan(ctx, record.agent.session)
+        if (plan !== undefined) await notify({ sessionId, update: plan })
         const pressure = usageUpdate(ctx, record.agent.session)
         if (pressure !== undefined) await notify({ sessionId, update: pressure })
         sessions.set(sessionId, record)
@@ -543,6 +560,75 @@ export function apply(ctx: Context, config: AcpPlusConfig): void {
           throw error
         }
       })().finally(() => { activating.delete(sessionId) })
+    },
+
+    async forkSession(params: ForkSessionRequest, signal: AbortSignal): Promise<ForkSessionResponse> {
+      assertOpen()
+      if (!spec.features.sessionFork) throw invalidParams('session/fork is not enabled by this deployment')
+      const additionalDirectories = await authorizeWorkspace(params)
+      const sourceId = brandString<SessionId>(params.sessionId)
+      // A live source can still hold buffered events; flush before reading so
+      // the child inherits everything the source has durably committed.
+      const liveSource = ctx.sessions.get(sourceId)
+      if (liveSource !== undefined) {
+        try {
+          await ctx.sessions.flush(liveSource)
+        } catch (error: unknown) {
+          throw internalError(`failed to flush the fork source: ${errorChain(error)}`)
+        }
+      }
+      const persisted = (await persistence.stat(sourceId, { signal }))?.header
+      // Subagent-produced sessions are internal work products of their parent,
+      // not conversations; plain historical forks (which may carry
+      // `parentSession` lineage) remain forkable.
+      if (persisted === undefined || persisted.origin === 'subagent') {
+        throw invalidParams(`session is not forkable: ${sourceId}`)
+      }
+      if (!await sameDirectory(persisted.cwd, params.cwd)) {
+        throw invalidParams(`session cwd does not match: ${params.cwd}`)
+      }
+      const prefix = forkPrefix(await readSessionEvents(ctx, sourceId, signal))
+      if (prefix === undefined) {
+        throw invalidParams(`session has no completed turn to fork from: ${sourceId}`)
+      }
+      const sessionId = brandString<SessionId>(randomUUID())
+      let record: AcpPlusSession
+      try {
+        record = await AcpPlusSession.fork(ctx, {
+          sessionId,
+          seed: prefix.seed,
+          inheritedEventCount: prefix.inheritedEventCount,
+          cwd: params.cwd,
+          mcpServers: params.mcpServers ?? [],
+          additionalDirectories,
+          agentOptions: agentOptions(spec, initialSelection()),
+          signal,
+          notify,
+        })
+      } catch (error: unknown) {
+        if (error instanceof AcpPlusMcpConfigError || error instanceof AcpPlusAdditionalDirectoriesError) {
+          throw invalidParams(error.message)
+        }
+        throw error
+      }
+      if (closed) {
+        await record.close('connection closed during session/fork')
+        throw internalError('connection closed during session/fork')
+      }
+      sessions.set(sessionId, record)
+      try {
+        // Materialize the seeded log durably so the child is listable and
+        // resumable even if the client never prompts it.
+        await ctx.sessions.flush(record.agent.session)
+        assertOpen()
+        await attachWorkspace(record.agent.session, params.cwd)
+        publishCommandsAfterResponse(record)
+        return { sessionId, configOptions: await record.configOptions(signal), ...modesOption(record) }
+      } catch (error: unknown) {
+        sessions.delete(sessionId)
+        await record.close('session/fork activation failed')
+        throw error
+      }
     },
 
     setSessionMode(params: SetSessionModeRequest): SetSessionModeResponse {
@@ -628,6 +714,7 @@ export function apply(ctx: Context, config: AcpPlusConfig): void {
     .onRequest(methods.agent.session.list, ({ params, signal }) => implementation.listSessions(params, signal))
     .onRequest(methods.agent.session.load, ({ params, signal }) => implementation.loadSession(params, signal))
     .onRequest(methods.agent.session.resume, ({ params, signal }) => implementation.resumeSession(params, signal))
+    .onRequest(methods.agent.session.fork, ({ params, signal }) => implementation.forkSession(params, signal))
     .onRequest(methods.agent.session.close, ({ params }) => implementation.closeSession(params))
     .onRequest(methods.agent.session.setMode, ({ params }) => implementation.setSessionMode(params))
     .onRequest(methods.agent.session.setConfigOption, ({ params, signal }) => implementation.setSessionConfigOption(params, signal))
@@ -679,11 +766,19 @@ export function apply(ctx: Context, config: AcpPlusConfig): void {
   ctx.effect(() => quiesce, 'acp-plus.connection')
 }
 
-/** Build per-agent options from the resolved spec without assigning absent optional fields. */
-function agentOptions(spec: AcpPlusSpec): AgentOptions {
+/**
+ * Build per-agent options from the explicit spec, else the live deployment
+ * default. The Agent's own selection projection takes precedence over these
+ * options once a session records a selection or a request, so a resumed
+ * session keeps its logged route.
+ */
+function agentOptions(spec: AcpPlusSpec, fallback: ModelSelection | undefined): AgentOptions {
+  const selection = spec.selection ?? fallback
+  if (selection === undefined) return {}
   return {
-    ...spec.provider !== undefined ? { provider: spec.provider } : {},
-    ...spec.model !== undefined ? { model: spec.model } : {},
+    provider: selection.provider,
+    model: selection.model,
+    ...selection.reasoningEffort === undefined ? {} : { reasoningEffort: selection.reasoningEffort },
   }
 }
 
