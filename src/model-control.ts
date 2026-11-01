@@ -7,6 +7,9 @@
  * projected into one grouped `select` option. The catalog is advisory — the
  * exact route is validated with `ctx.llm.resolveCallConfig()`, and a selected
  * model missing from the catalog is injected into the list rather than hidden.
+ * Its label comes from `ctx.llm.resolveModelInfo()`, which does not consult the
+ * catalog, so a provider whose listing fails still shows the configured display
+ * name instead of the routing id.
  *
  * Ported from `packages/acp/acp/src/model-control.ts`; the native class is not
  * reusable here because the standalone profile does not install @deepseek-ai/dsh-acp.
@@ -131,27 +134,34 @@ export class AcpPlusModelControl {
       routeAvailable = false
     }
     const choices = new Map<SessionConfigValueId, ModelSelection>()
-    const groups = await Promise.all(this.llm.listProviders().map(async (provider) => {
-      try {
-        const models = await this.llm.listModels(provider.id)
-        const entries = models.map((model) => {
-          const choice: ModelChoice = {
-            value: modelValue(provider.id, model.id),
-            selection: { provider: provider.id, model: model.id },
-          }
-          choices.set(choice.value, choice.selection)
-          return {
-            value: choice.value,
-            name: model.name,
-            ...model.description === undefined ? {} : { description: model.description },
-          }
-        })
-        return { group: provider.id, name: provider.name, options: entries }
-      } catch (_providerCatalogUnavailable) {
-        // One provider's catalog failing must not fail the whole option state.
-        return { group: provider.id, name: provider.name, options: [] }
-      }
-    }))
+    const [groups, info] = await Promise.all([
+      Promise.all(this.llm.listProviders().map(async (provider) => {
+        try {
+          const models = await this.llm.listModels(provider.id)
+          const entries = models.map((model) => {
+            const choice: ModelChoice = {
+              value: modelValue(provider.id, model.id),
+              selection: { provider: provider.id, model: model.id },
+            }
+            choices.set(choice.value, choice.selection)
+            return {
+              value: choice.value,
+              name: model.name,
+              ...model.description === undefined ? {} : { description: model.description },
+            }
+          })
+          return { group: provider.id, name: provider.name, options: entries }
+        } catch (_providerCatalogUnavailable) {
+          // One provider's catalog failing must not fail the whole option state.
+          return { group: provider.id, name: provider.name, options: [] }
+        }
+      })),
+      // Exact-route metadata never reads the advisory catalog, so it still
+      // names the selected model when the provider's listing is unavailable.
+      routeAvailable
+        ? this.llm.resolveModelInfo(resolved.provider, resolved.model, signal)
+        : undefined,
+    ])
     const currentValue = modelValue(resolved.provider, resolved.model)
     if (!choices.has(currentValue)) {
       choices.set(currentValue, { provider: resolved.provider, model: resolved.model })
@@ -160,7 +170,7 @@ export class AcpPlusModelControl {
         group = { group: resolved.provider, name: resolved.provider, options: [] }
         groups.push(group)
       }
-      group.options.unshift({ value: currentValue, name: resolved.model })
+      group.options.unshift({ value: currentValue, name: info?.name ?? resolved.model })
     }
     const options: SessionConfigOption[] = [{
       id: MODEL_CONFIG_ID,
@@ -170,9 +180,6 @@ export class AcpPlusModelControl {
       currentValue,
       options: groups.filter(group => group.options.length > 0),
     }]
-    const info = routeAvailable
-      ? await this.llm.resolveModelInfo(resolved.provider, resolved.model, signal)
-      : undefined
     if (info?.reasoning !== undefined) {
       options.push({
         id: REASONING_CONFIG_ID,

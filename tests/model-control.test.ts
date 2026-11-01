@@ -31,6 +31,12 @@ class FakeModel implements Model {
   }
 }
 
+/** Configured display names, deliberately different from the routing ids. */
+const MODEL_NAMES: Record<string, string> = {
+  mock: 'Mock Display',
+  unlisted: 'Unlisted Display',
+}
+
 /** Minimal LLM catalog/runtime double for pure standard-option tests. */
 function llmRuntime(overrides: Partial<LlmRuntime> = {}): LlmRuntime {
   return {
@@ -46,7 +52,7 @@ function llmRuntime(overrides: Partial<LlmRuntime> = {}): LlmRuntime {
     resolveModelInfo: (provider: string, model: string) => Promise.resolve({
       provider,
       id: model,
-      name: model,
+      name: MODEL_NAMES[model] ?? model,
       reasoning: {
         efforts: [
           { id: ReasoningEffortId('low'), name: 'Low', description: 'Less thought.' },
@@ -82,7 +88,7 @@ test('synthesizes an unlisted current route and exposes reasoning descriptions',
     category: 'model',
     type: 'select',
     currentValue: '["private","unlisted"]',
-    options: [{ group: 'private', name: 'private', options: [{ value: '["private","unlisted"]', name: 'unlisted' }] }],
+    options: [{ group: 'private', name: 'private', options: [{ value: '["private","unlisted"]', name: 'Unlisted Display' }] }],
   })
   assert.deepEqual(reasoning, {
     id: 'reasoning_effort',
@@ -102,7 +108,7 @@ test('synthesizes an unlisted current route and exposes reasoning descriptions',
   assert.equal(switched?.currentValue, '["private","switched"]')
 })
 
-test('keeps the selected route when its provider catalog is temporarily unavailable', async () => {
+test('keeps the selected route and its display name when its provider catalog is unavailable', async () => {
   let listed = 0
   const control = new AcpPlusModelControl(llmRuntime({
     listModels: () => { listed += 1; return Promise.reject(new Error('catalog unavailable')) },
@@ -117,7 +123,26 @@ test('keeps the selected route when its provider catalog is temporarily unavaila
     category: 'model',
     type: 'select',
     currentValue: '["mock","mock"]',
-    options: [{ group: 'mock', name: 'Mock', options: [{ value: '["mock","mock"]', name: 'mock' }] }],
+    options: [{ group: 'mock', name: 'Mock', options: [{ value: '["mock","mock"]', name: 'Mock Display' }] }],
+  })
+})
+
+test('keeps the configured display name when a provider advertises no models', async () => {
+  // pi-ai's listModels answers `[]` rather than rejecting when the credential
+  // is missing, so the empty catalog is the same failure surface.
+  const control = new AcpPlusModelControl(llmRuntime({
+    listModels: () => Promise.resolve([]),
+  }), new FakeModel({ provider: 'mock', model: 'mock' }))
+
+  const options = await control.options()
+
+  assert.deepEqual(options[0], {
+    id: 'model',
+    name: 'Model',
+    category: 'model',
+    type: 'select',
+    currentValue: '["mock","mock"]',
+    options: [{ group: 'mock', name: 'Mock', options: [{ value: '["mock","mock"]', name: 'Mock Display' }] }],
   })
 })
 
