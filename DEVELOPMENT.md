@@ -56,7 +56,7 @@ Breaking one of these breaks the bridge in ways that are hard to diagnose.
 4. **HMR stays off.** Hot reload over a stdio connection breaks the protocol
    stream; `cordis.patch.yml` disables it.
 5. **Peer versions.** Every `@deepseek-ai/dsh-*` peer must match the running
-   harness version (currently `^0.2.2-alpha.2`, locked by
+   harness version (currently `^0.2.2-alpha.3`, locked by
    `tests/packaging.test.ts`). A mismatched row is disabled by the plugin
    preflight and needs an explicit `dsh plugin allow-version` exemption.
 6. **`session/new` agents mount no preset.** The ACP bundle keeps model-facing
@@ -131,7 +131,7 @@ DSH_BIN="pnpm dsh" node scripts/smoke-client.mjs
 ```
 
 The TypeScript `paths` map points at the sibling `../deepseek-harness` checkout
-(tag `dsh-v0.2.2-alpha.2`), so `pnpm check` and `pnpm test` typecheck and bundle
+(tag `dsh-v0.2.2-alpha.3`), so `pnpm check` and `pnpm test` typecheck and bundle
 against harness source. That checkout declares Node `>=24.9.0` (pnpm may warn);
 the suite is also verified on Node 22, which is what the bridge itself publishes
 in `engines.node`. Runtime never uses those paths; a profile resolves the peers
