@@ -39,22 +39,18 @@ test('the bundle manifest passes the dsh plugin-compatibility preflight', async 
   assert.equal(new Set(dshPeers.map(([, range]) => range)).size, 1,
     'all @deepseek-ai/dsh-* peers must target the same runtime range')
 
-  // Validate against the sibling checkout when it satisfies the declared
-  // range. An older checkout (a common state while the target is a
-  // prerelease) falls back to the range's floor, so the test still guards the
-  // manifest's stated target instead of silently validating an old runtime.
+  // The suite bundles the sibling checkout's real implementation. Reject an
+  // out-of-range checkout rather than passing preflight with a synthetic
+  // version while exercising an older runtime.
   const firstPeer = dshPeers[0]
   assert.ok(firstPeer, 'the manifest must declare at least one @deepseek-ai/dsh-* peer')
   const range = firstPeer[1]
   const checkout = await projectJson<{ version: string }>(
     '..', 'deepseek-harness', 'packages', 'boot', 'app-boot', 'package.json',
   )
-  const floor = semver.minVersion(range)
-  assert.ok(floor, `${range} must have a lowest admitted version`)
-  const runtime = semver.satisfies(checkout.version, range, { includePrerelease: true })
-    ? checkout.version
-    : floor.version
-  assert.equal(evaluatePluginCompatibility(manifest, {}, runtime), undefined)
+  assert.ok(semver.satisfies(checkout.version, range, { includePrerelease: true }),
+    `sibling checkout ${checkout.version} must satisfy ${range}; use the tag documented in DEVELOPMENT.md`)
+  assert.equal(evaluatePluginCompatibility(manifest, {}, checkout.version), undefined)
 })
 
 test('the manifest ships its entries and the profile patch references them', async () => {
