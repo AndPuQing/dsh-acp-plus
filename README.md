@@ -47,8 +47,8 @@ dsh --profile acp-plus
 
 - Node.js >= 22
 - DeepSeek Harness (`dsh`) with a model route configured. The plugin's
-  `@deepseek-ai/dsh-*` peers are pinned to the running harness version
-  (`^0.2.2-alpha.3`).
+  `@deepseek-ai/dsh-*` peers track the latest `next` channel release
+  (currently `^0.2.2-rc.1`).
 
 ## Install
 
@@ -171,9 +171,9 @@ keeps its protocol semantics and extends them:
 - Standard ACP v1 plus the advertised session capabilities and the
   `_session/steering` extension; clients that do not know an extension ignore
   it.
-- All `@deepseek-ai/dsh-*` peers are pinned to `^0.2.2-alpha.3` and checked by
-  dsh's plugin preflight. On a different harness version, grant the
-  exact-version exemption the diagnostic describes
+- All `@deepseek-ai/dsh-*` peers track the latest `next` channel release
+  (`^0.2.2-rc.1`) and are checked by dsh's plugin preflight. On a different
+  harness version, grant the exact-version exemption the diagnostic describes
   (`dsh plugin allow-version <name>@<version>`).
 
 ## Development
