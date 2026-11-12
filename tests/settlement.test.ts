@@ -31,7 +31,7 @@ test('waits for descendants and reports the later summary turn', async () => {
     const children = Promise.withResolvers<boolean>()
     let calls = 0
     harness.ctx.provide('subagents', {
-      waitForChildren: () => {
+      waitForTreeWork: () => {
         calls += 1
         if (calls > 1) return Promise.resolve(false)
         waiting.resolve()
@@ -73,7 +73,7 @@ test('cancels the child wait without closing the session to its next prompt', as
     let calls = 0
     let drains = 0
     harness.ctx.provide('subagents', {
-      waitForChildren: () => {
+      waitForTreeWork: () => {
         calls += 1
         if (calls > 1) return Promise.resolve(false)
         waiting.resolve()
@@ -110,7 +110,7 @@ test('drains continuable subagents before disposing its own sessions', async () 
   const order: string[] = []
   let drainedParents: readonly Agent[] = []
   harness.ctx.provide('subagents', {
-    waitForChildren: () => Promise.resolve(false),
+    waitForTreeWork: () => Promise.resolve(false),
     drainDescendants: (parents: readonly Agent[]) => {
       drainedParents = parents
       order.push('drained')
